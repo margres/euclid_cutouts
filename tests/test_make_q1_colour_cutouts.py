@@ -147,7 +147,9 @@ def test_render_azulero_tile_skips_existing(tmp_path):
 
     sources = [{"source_id": "102000001_100", "ra": 0.0, "dec": 0.0}]
     with patch("make_q1_colour_cutouts._extract_cutout") as mock_extract, \
-         patch("make_q1_colour_cutouts.azulero_render.build_transform", return_value=object()):
+         patch("make_q1_colour_cutouts.azulero_render.build_transform", return_value=object()), \
+         patch("cutana_datalabs.azulero_render.render_rgb_uint8") as mock_render:
         m.render_azulero_tile(np.zeros((4, 512, 512), np.float32), None, sources, str(out_dir))
 
     mock_extract.assert_not_called()
+    mock_render.assert_not_called()

@@ -120,7 +120,7 @@ def _extract_cutout(iyjh: np.ndarray, wcs: WCS, ra: float, dec: float, size: int
     return out
 
 
-def render_azulero_tile(iyjh: np.ndarray, wcs: WCS | None,
+def render_azulero_tile(iyjh: np.ndarray, wcs: WCS,
                         sources: list[dict], out_dir: str) -> int:
     """Render azulero JPEGs for all sources in one tile.
 
@@ -132,6 +132,7 @@ def render_azulero_tile(iyjh: np.ndarray, wcs: WCS | None,
     """
     transform = azulero_render.build_transform()
     n_ok = 0
+    n_fail = 0
     for src in sources:
         out_path = os.path.join(out_dir, f"{src['source_id']}.jpg")
         if os.path.exists(out_path):
@@ -142,5 +143,9 @@ def render_azulero_tile(iyjh: np.ndarray, wcs: WCS | None,
             Image.fromarray(rgb).save(out_path, format="JPEG", quality=95)
             n_ok += 1
         except Exception:
-            logging.exception(f"  azulero render failed for {src['source_id']}")
+            logging.exception("  azulero render failed for %s", src['source_id'])
+            n_fail += 1
+
+    if n_fail:
+        logging.warning(f"  {n_fail} renders failed in {out_dir}")
     return n_ok
