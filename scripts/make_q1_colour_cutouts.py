@@ -8,22 +8,14 @@ Run:
     python make_q1_colour_cutouts.py
 """
 
-import glob
-import json
 import logging
 import multiprocessing as mp
 import os
 import re
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
-from astropy.io import fits
-from astropy.wcs import WCS
-from PIL import Image
 
 # Make cutana_datalabs and local scripts importable
 _CUTANA_ROOT = "/media/user/astronomaly-euclid"
@@ -54,7 +46,10 @@ BAND_TO_INST     = {"VIS": "VIS", "NIR_Y": "NISP", "NIR_J": "NISP"}
 
 def parse_source_id(source_id: str) -> tuple[int, int]:
     """'{tileID}_{objectID}' (NEG-encoded) -> (tile_id, object_id)."""
-    tile_str, obj_str = str(source_id).split("_", 1)
+    parts = str(source_id).split("_", 1)
+    if len(parts) != 2:
+        raise ValueError(f"Unexpected source_id format: {source_id!r}")
+    tile_str, obj_str = parts
     obj_id = -int(obj_str[3:]) if obj_str.startswith("NEG") else int(obj_str)
     return int(tile_str), obj_id
 
@@ -74,11 +69,22 @@ def load_sources(parquet_path: str, coords_csv: str) -> pd.DataFrame:
     })
 
     coords = pd.read_csv(coords_csv, usecols=["object_id", "right_ascension", "declination"])
+    # object_id is globally unique in the Euclid MER catalog, so joining on
+    # object_id alone (without tile_id) is safe — each object_id maps to exactly
+    # one sky position regardless of which tile it was detected in.
     df = df.merge(coords, on="object_id", how="left").rename(
         columns={"right_ascension": "ra", "declination": "dec"}
     )
     n_before = len(df)
     df = df.dropna(subset=["ra", "dec"]).reset_index(drop=True)
-    if n_before - len(df):
+    if n_before > len(df):
         logging.warning(f"{n_before - len(df)} sources had no RA/Dec match — dropped")
     return df[["source_id", "tile_id", "ra", "dec"]]
+
+
+# Runtime imports (used by functions added in later tasks):
+# import glob, json, shutil, subprocess
+# import numpy as np
+# from astropy.io import fits
+# from astropy.wcs import WCS
+# from PIL import Image
