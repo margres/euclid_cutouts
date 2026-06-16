@@ -189,3 +189,18 @@ def test_rename_eummy_cutouts_skips_existing(tmp_path):
     sources = [{"source_id": "102000001_100", "ra": 10.0, "dec": -27.0}]
     n = m.rename_eummy_cutouts(str(tile_dir), sources, str(eummy_out))
     assert n == 0   # skipped, already exists
+
+
+def test_process_tile_skips_missing_fits():
+    with patch("make_q1_colour_cutouts.resolve_iyjh_paths", return_value=None):
+        result = m.process_tile((
+            102000001,
+            [{"source_id": "102000001_100", "ra": 10.0, "dec": -27.0}],
+            "/tmp/azulero_test",
+            "/tmp/eummy_test",
+        ))
+    tile_id, n_az, n_em, n_skip = result
+    assert tile_id == 102000001
+    assert n_az == 0
+    assert n_em == 0
+    assert n_skip == 1

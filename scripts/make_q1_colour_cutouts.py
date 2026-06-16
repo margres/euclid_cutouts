@@ -198,6 +198,90 @@ def rename_eummy_cutouts(tile_dir: str, sources: list[dict], eummy_out_dir: str,
     return n_renamed
 
 
+def process_tile(args: tuple) -> tuple[int, int, int, int]:
+    """Per-tile worker. Args: (tile_id, sources, azulero_out, eummy_out).
+    Returns: (tile_id, n_azulero_ok, n_eummy_ok, n_skipped).
+    """
+    tile_id, sources, azulero_out, eummy_out = args
+
+    # Resolve FITS paths using first source's RA/Dec for coverage check
+    ra0, dec0 = sources[0]["ra"], sources[0]["dec"]
+    iyjh_paths = resolve_iyjh_paths(tile_id, ra0, dec0)
+    if iyjh_paths is None:
+        logging.warning("Tile %s: FITS not found — skipping %d sources", tile_id, len(sources))
+        return tile_id, 0, 0, len(sources)
+
+    # ── Azulero pass ────────────────────────────────────────────────────────
+    az_tile_dir = os.path.join(azulero_out, str(tile_id))
+    os.makedirs(az_tile_dir, exist_ok=True)
+
+    handles = [fits.open(p, memmap=True) for p in iyjh_paths]
+    try:
+        iyjh = np.stack([h[0].data.astype(np.float32) for h in handles])
+        wcs  = WCS(handles[0][0].header)
+    finally:
+        for h in handles:
+            h.close()
+
+    n_azulero = render_azulero_tile(iyjh, wcs, sources, az_tile_dir)
+    del iyjh  # free memory before eummy
+
+    # ── Eummy pass ──────────────────────────────────────────────────────────
+    em_tile_dir = os.path.join(eummy_out, f"_tile_ws_{tile_id}")
+    try:
+        n_eummy = run_eummy_tile(iyjh_paths, sources, em_tile_dir, eummy_out)
+    except subprocess.CalledProcessError:
+        logging.exception("Tile %s: eummy failed", tile_id)
+        n_eummy = 0
+    finally:
+        shutil.rmtree(em_tile_dir, ignore_errors=True)
+
+    return tile_id, n_azulero, n_eummy, 0
+
+
+def main():
+    logging.info("Loading sources from %s", INPUT_PARQUET)
+    df = load_sources(INPUT_PARQUET, COORDS_CSV)
+    logging.info("%d sources across %d tiles", len(df), df["tile_id"].nunique())
+
+    os.makedirs(AZULERO_OUT, exist_ok=True)
+    os.makedirs(EUMMY_OUT,   exist_ok=True)
+
+    work_items = [
+        (int(tile_id),
+         group[["source_id", "ra", "dec"]].to_dict("records"),
+         AZULERO_OUT,
+         EUMMY_OUT)
+        for tile_id, group in df.groupby("tile_id")
+    ]
+
+    n_tiles = len(work_items)
+    total_az = total_em = total_skip = done = 0
+
+    with mp.Pool(N_WORKERS, initializer=lambda: __import__("cv2").setNumThreads(1)) as pool:
+        for tile_id, n_az, n_em, n_skip in pool.imap_unordered(process_tile, work_items):
+            total_az   += n_az
+            total_em   += n_em
+            total_skip += n_skip
+            done       += 1
+            if done % 50 == 0 or done == n_tiles:
+                logging.info(
+                    "[%d/%d tiles] azulero=%d eummy=%d skipped=%d",
+                    done, n_tiles, total_az, total_em, total_skip,
+                )
+
+    logging.info(
+        "Done. azulero JPEGs: %d  eummy PNGs: %d  skipped: %d\n"
+        "  azulero → %s/{tileID}/\n"
+        "  eummy   → %s/",
+        total_az, total_em, total_skip, AZULERO_OUT, EUMMY_OUT,
+    )
+
+
+if __name__ == "__main__":
+    main()
+
+
 def run_eummy_tile(iyjh_paths: list[str], sources: list[dict],
                    tile_dir: str, eummy_out_dir: str) -> int:
     """Run eummy for one tile and rename the output PNGs.
