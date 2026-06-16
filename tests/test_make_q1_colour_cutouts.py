@@ -2,6 +2,9 @@ import os
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
+from pathlib import Path
+from unittest.mock import patch
+
 import pandas as pd
 import pytest
 import make_q1_colour_cutouts as m
@@ -75,10 +78,6 @@ def test_load_sources_drops_unmatched(tmp_path):
     assert 300 not in df["source_id"].values
 
 
-from unittest.mock import patch
-from pathlib import Path
-
-
 def test_resolve_iyjh_paths_returns_none_when_missing():
     with patch("make_q1_colour_cutouts.find_fits_paths_any_release", return_value=None):
         result = m.resolve_iyjh_paths(102000001, 10.0, -27.0)
@@ -111,3 +110,5 @@ def test_resolve_iyjh_paths_returns_4_paths(tmp_path):
     assert result is not None
     assert len(result) == 4
     assert any("NIR-H" in p for p in result)
+    assert "VIS" in result[0]
+    assert "NIR-H" in result[3]
