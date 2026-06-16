@@ -155,8 +155,6 @@ def test_render_azulero_tile_skips_existing(tmp_path):
     mock_render.assert_not_called()
 
 
-import re
-
 
 def test_rename_eummy_cutouts(tmp_path):
     tile_dir = tmp_path / "tile_102000001"

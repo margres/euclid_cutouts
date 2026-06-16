@@ -169,6 +169,7 @@ def rename_eummy_cutouts(tile_dir: str, sources: list[dict], eummy_out_dir: str,
     ra_arr = np.array([s["ra"] for s in sources])
     dec_arr = np.array([s["dec"] for s in sources])
 
+    os.makedirs(eummy_out_dir, exist_ok=True)
     n_renamed = 0
     for png_path in glob.glob(os.path.join(tile_dir, "TILE*_*.png")):
         fname = os.path.basename(png_path)
@@ -192,7 +193,6 @@ def rename_eummy_cutouts(tile_dir: str, sources: list[dict], eummy_out_dir: str,
         dest = os.path.join(eummy_out_dir, f"{source_id}.png")
         if os.path.exists(dest):
             continue
-        os.makedirs(eummy_out_dir, exist_ok=True)
         os.replace(png_path, dest)
         n_renamed += 1
     return n_renamed
