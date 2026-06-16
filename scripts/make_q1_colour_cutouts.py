@@ -85,7 +85,7 @@ def load_sources(parquet_path: str, coords_csv: str) -> pd.DataFrame:
     n_before = len(df)
     df = df.dropna(subset=["ra", "dec"]).reset_index(drop=True)
     if n_before > len(df):
-        logging.warning(f"{n_before - len(df)} sources had no RA/Dec match — dropped")
+        logging.warning("%d sources had no RA/Dec match — dropped", n_before - len(df))
     return df[["source_id", "tile_id", "ra", "dec"]]
 
 
@@ -198,6 +198,64 @@ def rename_eummy_cutouts(tile_dir: str, sources: list[dict], eummy_out_dir: str,
     return n_renamed
 
 
+def render_azulero_tile(iyjh: np.ndarray, wcs: WCS,
+                        sources: list[dict], out_dir: str) -> int:
+    """Render azulero JPEGs for all sources in one tile.
+
+    iyjh: (4, H, W) float32 — full tile already loaded in memory.
+    wcs:  WCS from band-0 header.
+    sources: list of dicts with keys source_id, ra, dec.
+    out_dir: tile-level directory (already created by caller).
+    Returns number of JPEGs written.
+    """
+    transform = azulero_render.build_transform()
+    n_ok = 0
+    n_fail = 0
+    for src in sources:
+        out_path = os.path.join(out_dir, f"{src['source_id']}.jpg")
+        if os.path.exists(out_path):
+            continue
+        try:
+            cutout = _extract_cutout(iyjh, wcs, src["ra"], src["dec"], CUTOUT_PIXELS)
+            rgb = azulero_render.render_rgb_uint8(cutout, transform)
+            Image.fromarray(rgb).save(out_path, format="JPEG", quality=95)
+            n_ok += 1
+        except Exception:
+            logging.exception("  azulero render failed for %s", src['source_id'])
+            n_fail += 1
+
+    if n_fail:
+        logging.warning("  %d renders failed in %s", n_fail, out_dir)
+    return n_ok
+
+
+def run_eummy_tile(iyjh_paths: list[str], sources: list[dict],
+                   tile_dir: str, eummy_out_dir: str) -> int:
+    """Run eummy for one tile and rename the output PNGs.
+
+    Sets up a workspace with symlinked FITS files, writes a FITS catalog,
+    runs eummy, then renames the cutouts to {source_id}.png in eummy_out_dir.
+    Returns number of cutouts produced.
+    """
+    _setup_tile_workspace(tile_dir, iyjh_paths)
+    catalog_path = os.path.join(tile_dir, "cutout_catalog.fits")
+    _write_tile_catalog(sources, catalog_path)
+    cmd = [
+        _find_eummy_exe(),
+        "--path", tile_dir,
+        "--cutouts", catalog_path, f'{CUTOUT_ARCSEC}"',
+        "--nthreads", str(N_WORKERS),
+    ]
+    logging.info("Running: %s", " ".join(cmd))
+    subprocess.run(cmd, check=True, capture_output=True)
+    return rename_eummy_cutouts(tile_dir, sources, eummy_out_dir)
+
+
+def _init_worker():
+    import cv2
+    cv2.setNumThreads(1)
+
+
 def process_tile(args: tuple) -> tuple[int, int, int, int]:
     """Per-tile worker. Args: (tile_id, sources, azulero_out, eummy_out).
     Returns: (tile_id, n_azulero_ok, n_eummy_ok, n_skipped).
@@ -258,7 +316,7 @@ def main():
     n_tiles = len(work_items)
     total_az = total_em = total_skip = done = 0
 
-    with mp.Pool(N_WORKERS, initializer=lambda: __import__("cv2").setNumThreads(1)) as pool:
+    with mp.Pool(N_WORKERS, initializer=_init_worker) as pool:
         for tile_id, n_az, n_em, n_skip in pool.imap_unordered(process_tile, work_items):
             total_az   += n_az
             total_em   += n_em
@@ -280,56 +338,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-def run_eummy_tile(iyjh_paths: list[str], sources: list[dict],
-                   tile_dir: str, eummy_out_dir: str) -> int:
-    """Run eummy for one tile and rename the output PNGs.
-
-    Sets up a workspace with symlinked FITS files, writes a FITS catalog,
-    runs eummy, then renames the cutouts to {source_id}.png in eummy_out_dir.
-    Returns number of cutouts produced.
-    """
-    _setup_tile_workspace(tile_dir, iyjh_paths)
-    catalog_path = os.path.join(tile_dir, "cutout_catalog.fits")
-    _write_tile_catalog(sources, catalog_path)
-    cmd = [
-        _find_eummy_exe(),
-        "--path", tile_dir,
-        "--cutouts", catalog_path, f'{CUTOUT_ARCSEC}"',
-        "--nthreads", str(N_WORKERS),
-    ]
-    logging.info("Running: %s", " ".join(cmd))
-    subprocess.run(cmd, check=True, capture_output=True)
-    return rename_eummy_cutouts(tile_dir, sources, eummy_out_dir)
-
-
-def render_azulero_tile(iyjh: np.ndarray, wcs: WCS,
-                        sources: list[dict], out_dir: str) -> int:
-    """Render azulero JPEGs for all sources in one tile.
-
-    iyjh: (4, H, W) float32 — full tile already loaded in memory.
-    wcs:  WCS from band-0 header.
-    sources: list of dicts with keys source_id, ra, dec.
-    out_dir: tile-level directory (already created by caller).
-    Returns number of JPEGs written.
-    """
-    transform = azulero_render.build_transform()
-    n_ok = 0
-    n_fail = 0
-    for src in sources:
-        out_path = os.path.join(out_dir, f"{src['source_id']}.jpg")
-        if os.path.exists(out_path):
-            continue
-        try:
-            cutout = _extract_cutout(iyjh, wcs, src["ra"], src["dec"], CUTOUT_PIXELS)
-            rgb = azulero_render.render_rgb_uint8(cutout, transform)
-            Image.fromarray(rgb).save(out_path, format="JPEG", quality=95)
-            n_ok += 1
-        except Exception:
-            logging.exception("  azulero render failed for %s", src['source_id'])
-            n_fail += 1
-
-    if n_fail:
-        logging.warning(f"  {n_fail} renders failed in {out_dir}")
-    return n_ok
