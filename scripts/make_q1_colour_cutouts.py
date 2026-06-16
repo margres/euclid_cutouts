@@ -8,14 +8,22 @@ Run:
     python make_q1_colour_cutouts.py
 """
 
+import glob
+import json
 import logging
 import multiprocessing as mp
 import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+from astropy.io import fits
+from astropy.wcs import WCS
+from PIL import Image
 
 # Make cutana_datalabs and local scripts importable
 _CUTANA_ROOT = "/media/user/astronomaly-euclid"
@@ -96,9 +104,43 @@ def resolve_iyjh_paths(tile_id: int, ra: float, dec: float) -> list[str] | None:
     return azulero_render.find_iyjh_paths(paths_3)
 
 
-# Runtime imports (used by functions added in later tasks):
-# import glob, json, shutil, subprocess
-# import numpy as np
-# from astropy.io import fits
-# from astropy.wcs import WCS
-# from PIL import Image
+def _extract_cutout(iyjh: np.ndarray, wcs: WCS, ra: float, dec: float, size: int) -> np.ndarray:
+    """Slice a size×size cutout from a pre-loaded (4,H,W) array, zero-padding edges."""
+    ny, nx = iyjh.shape[1], iyjh.shape[2]
+    x, y = wcs.world_to_pixel_values(ra, dec)
+    half = size // 2
+    x0, y0 = int(round(float(x))) - half, int(round(float(y))) - half
+    x1, y1 = x0 + size, y0 + size
+    x0c, x1c = max(0, x0), min(nx, x1)
+    y0c, y1c = max(0, y0), min(ny, y1)
+    out = np.zeros((4, size, size), dtype=np.float32)
+    if x1c > x0c and y1c > y0c:
+        out[:, y0c - y0:y0c - y0 + (y1c - y0c), x0c - x0:x0c - x0 + (x1c - x0c)] = \
+            iyjh[:, y0c:y1c, x0c:x1c]
+    return out
+
+
+def render_azulero_tile(iyjh: np.ndarray, wcs: WCS | None,
+                        sources: list[dict], out_dir: str) -> int:
+    """Render azulero JPEGs for all sources in one tile.
+
+    iyjh: (4, H, W) float32 — full tile already loaded in memory.
+    wcs:  WCS from band-0 header.
+    sources: list of dicts with keys source_id, ra, dec.
+    out_dir: tile-level directory (already created by caller).
+    Returns number of JPEGs written.
+    """
+    transform = azulero_render.build_transform()
+    n_ok = 0
+    for src in sources:
+        out_path = os.path.join(out_dir, f"{src['source_id']}.jpg")
+        if os.path.exists(out_path):
+            continue
+        try:
+            cutout = _extract_cutout(iyjh, wcs, src["ra"], src["dec"], CUTOUT_PIXELS)
+            rgb = azulero_render.render_rgb_uint8(cutout, transform)
+            Image.fromarray(rgb).save(out_path, format="JPEG", quality=95)
+            n_ok += 1
+        except Exception:
+            logging.exception(f"  azulero render failed for {src['source_id']}")
+    return n_ok

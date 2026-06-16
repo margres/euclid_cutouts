@@ -5,9 +5,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 import pytest
 import make_q1_colour_cutouts as m
+
+
+def _make_fake_iyjh(ny=512, nx=512):
+    return np.random.rand(4, ny, nx).astype(np.float32)
 
 
 def test_parse_source_id_positive():
@@ -112,3 +117,37 @@ def test_resolve_iyjh_paths_returns_4_paths(tmp_path):
     assert any("NIR-H" in p for p in result)
     assert "VIS" in result[0]
     assert "NIR-H" in result[3]
+
+
+def test_render_azulero_tile_creates_jpegs(tmp_path):
+    iyjh = _make_fake_iyjh()
+    sources = [
+        {"source_id": "102000001_100", "ra": 0.0, "dec": 0.0},
+        {"source_id": "102000001_NEG200", "ra": 0.001, "dec": 0.001},
+    ]
+    out_dir = tmp_path / "azulero" / "102000001"
+    out_dir.mkdir(parents=True)
+
+    fake_cutout = np.random.rand(4, 101, 101).astype(np.float32)
+    fake_rgb = np.zeros((101, 101, 3), dtype=np.uint8)
+    with patch("make_q1_colour_cutouts._extract_cutout", return_value=fake_cutout), \
+         patch("make_q1_colour_cutouts.azulero_render.build_transform", return_value=object()), \
+         patch("make_q1_colour_cutouts.azulero_render.render_rgb_uint8", return_value=fake_rgb):
+        n_ok = m.render_azulero_tile(iyjh, None, sources, str(out_dir))
+
+    assert n_ok == 2
+    assert (out_dir / "102000001_100.jpg").exists()
+    assert (out_dir / "102000001_NEG200.jpg").exists()
+
+
+def test_render_azulero_tile_skips_existing(tmp_path):
+    out_dir = tmp_path / "azulero" / "102000001"
+    out_dir.mkdir(parents=True)
+    (out_dir / "102000001_100.jpg").write_bytes(b"fake")
+
+    sources = [{"source_id": "102000001_100", "ra": 0.0, "dec": 0.0}]
+    with patch("make_q1_colour_cutouts._extract_cutout") as mock_extract, \
+         patch("make_q1_colour_cutouts.azulero_render.build_transform", return_value=object()):
+        m.render_azulero_tile(np.zeros((4, 512, 512), np.float32), None, sources, str(out_dir))
+
+    mock_extract.assert_not_called()
