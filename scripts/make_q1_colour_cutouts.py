@@ -120,6 +120,106 @@ def _extract_cutout(iyjh: np.ndarray, wcs: WCS, ra: float, dec: float, size: int
     return out
 
 
+# Matches the "TILE{id}_{RA}{+/-}{|Dec|}.png" filenames eummy writes for cutouts
+_EUMMY_RE = re.compile(r"^.+_(-?\d+\.\d+)([+-]\d+\.\d+)\.png$")
+
+
+def _find_eummy_exe() -> str:
+    """Locate the eummy console script, falling back to the directory of the
+    current Python interpreter (handles envs where it isn't on PATH)."""
+    exe = shutil.which("eummy")
+    if exe:
+        return exe
+    candidate = os.path.join(os.path.dirname(sys.executable), "eummy")
+    if os.path.exists(candidate):
+        return candidate
+    raise FileNotFoundError(
+        "Could not find the 'eummy' executable. Install it with "
+        "'pip install eummy' in this environment."
+    )
+
+
+def _setup_tile_workspace(tile_dir: str, iyjh_paths: list[str]) -> None:
+    """Symlink the FITS files for a tile into tile_dir, preserving their basenames."""
+    os.makedirs(tile_dir, exist_ok=True)
+    for path in iyjh_paths:
+        link = os.path.join(tile_dir, os.path.basename(path))
+        if not os.path.exists(link):
+            os.symlink(path, link)
+
+
+def _write_tile_catalog(sources: list[dict], catalog_path: str) -> None:
+    """Write a small FITS binary table with RA/DEC columns for eummy."""
+    ra_arr = np.array([s["ra"] for s in sources], dtype=np.float64)
+    dec_arr = np.array([s["dec"] for s in sources], dtype=np.float64)
+    cols = [
+        fits.Column(name="RA", format="D", array=ra_arr),
+        fits.Column(name="DEC", format="D", array=dec_arr),
+    ]
+    hdu = fits.BinTableHDU.from_columns(cols)
+    hdu.writeto(catalog_path, overwrite=True)
+
+
+def rename_eummy_cutouts(tile_dir: str, sources: list[dict], eummy_out_dir: str,
+                         match_tol_deg: float = 1.5 / 3600) -> int:
+    """Match eummy-written PNGs to sources by RA/Dec and move to eummy_out_dir/{source_id}.png.
+
+    Returns the number of files renamed/moved.
+    """
+    ra_arr = np.array([s["ra"] for s in sources])
+    dec_arr = np.array([s["dec"] for s in sources])
+
+    n_renamed = 0
+    for png_path in glob.glob(os.path.join(tile_dir, "TILE*_*.png")):
+        fname = os.path.basename(png_path)
+        match = _EUMMY_RE.match(fname)
+        if not match:
+            continue
+        ra, dec = float(match.group(1)), float(match.group(2))
+
+        dra = (ra_arr - ra) * np.cos(np.radians(dec))
+        ddec = dec_arr - dec
+        dist = np.hypot(dra, ddec)
+        i = int(np.argmin(dist))
+        if dist[i] > match_tol_deg:
+            logging.warning(
+                "  No source within match tolerance for %s (closest %.2f\")",
+                fname, dist[i] * 3600,
+            )
+            continue
+
+        source_id = sources[i]["source_id"]
+        dest = os.path.join(eummy_out_dir, f"{source_id}.png")
+        if os.path.exists(dest):
+            continue
+        os.makedirs(eummy_out_dir, exist_ok=True)
+        os.replace(png_path, dest)
+        n_renamed += 1
+    return n_renamed
+
+
+def run_eummy_tile(iyjh_paths: list[str], sources: list[dict],
+                   tile_dir: str, eummy_out_dir: str) -> int:
+    """Run eummy for one tile and rename the output PNGs.
+
+    Sets up a workspace with symlinked FITS files, writes a FITS catalog,
+    runs eummy, then renames the cutouts to {source_id}.png in eummy_out_dir.
+    Returns number of cutouts produced.
+    """
+    _setup_tile_workspace(tile_dir, iyjh_paths)
+    catalog_path = os.path.join(tile_dir, "cutout_catalog.fits")
+    _write_tile_catalog(sources, catalog_path)
+    cmd = [
+        _find_eummy_exe(),
+        "--path", tile_dir,
+        "--cutouts", catalog_path, f'{CUTOUT_ARCSEC}"',
+        "--nthreads", str(N_WORKERS),
+    ]
+    logging.info("Running: %s", " ".join(cmd))
+    subprocess.run(cmd, check=True, capture_output=True)
+    return rename_eummy_cutouts(tile_dir, sources, eummy_out_dir)
+
+
 def render_azulero_tile(iyjh: np.ndarray, wcs: WCS,
                         sources: list[dict], out_dir: str) -> int:
     """Render azulero JPEGs for all sources in one tile.

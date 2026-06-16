@@ -153,3 +153,41 @@ def test_render_azulero_tile_skips_existing(tmp_path):
 
     mock_extract.assert_not_called()
     mock_render.assert_not_called()
+
+
+import re
+
+
+def test_rename_eummy_cutouts(tmp_path):
+    tile_dir = tmp_path / "tile_102000001"
+    tile_dir.mkdir()
+    eummy_out = tmp_path / "eummy"
+    eummy_out.mkdir()
+
+    # Simulate eummy output filenames
+    (tile_dir / "TILE102000001_10.000000-27.000000.png").write_bytes(b"img1")
+    (tile_dir / "TILE102000001_11.000000-28.000000.png").write_bytes(b"img2")
+
+    sources = [
+        {"source_id": "102000001_100", "ra": 10.0, "dec": -27.0},
+        {"source_id": "102000001_NEG200", "ra": 11.0, "dec": -28.0},
+    ]
+    n = m.rename_eummy_cutouts(str(tile_dir), sources, str(eummy_out))
+
+    assert n == 2
+    assert (eummy_out / "102000001_100.png").exists()
+    assert (eummy_out / "102000001_NEG200.png").exists()
+
+
+def test_rename_eummy_cutouts_skips_existing(tmp_path):
+    tile_dir = tmp_path / "tile_102000001"
+    tile_dir.mkdir()
+    eummy_out = tmp_path / "eummy"
+    eummy_out.mkdir()
+    # Pre-existing output
+    (eummy_out / "102000001_100.png").write_bytes(b"existing")
+    (tile_dir / "TILE102000001_10.000000-27.000000.png").write_bytes(b"new")
+
+    sources = [{"source_id": "102000001_100", "ra": 10.0, "dec": -27.0}]
+    n = m.rename_eummy_cutouts(str(tile_dir), sources, str(eummy_out))
+    assert n == 0   # skipped, already exists
