@@ -73,3 +73,41 @@ def test_load_sources_drops_unmatched(tmp_path):
     df = m.load_sources(str(pq), str(csv))
     assert len(df) == 2
     assert 300 not in df["source_id"].values
+
+
+from unittest.mock import patch
+from pathlib import Path
+
+
+def test_resolve_iyjh_paths_returns_none_when_missing():
+    with patch("make_q1_colour_cutouts.find_fits_paths_any_release", return_value=None):
+        result = m.resolve_iyjh_paths(102000001, 10.0, -27.0)
+    assert result is None
+
+
+def test_resolve_iyjh_paths_returns_none_when_nirh_missing(tmp_path):
+    vis  = str(tmp_path / "EUC_MER_BGSUB-MOSAIC-VIS_TILE102000001-ABC_20240101T000000.0Z_v1.fits")
+    niry = str(tmp_path / "EUC_MER_BGSUB-MOSAIC-NIR-Y_TILE102000001-ABC_20240101T000000.0Z_v1.fits")
+    nirj = str(tmp_path / "EUC_MER_BGSUB-MOSAIC-NIR-J_TILE102000001-ABC_20240101T000000.0Z_v1.fits")
+    for p in [vis, niry, nirj]:
+        Path(p).touch()
+
+    with patch("make_q1_colour_cutouts.find_fits_paths_any_release", return_value=[vis, niry, nirj]):
+        # find_iyjh_paths globs for NIR-H; no real file → returns None
+        result = m.resolve_iyjh_paths(102000001, 10.0, -27.0)
+    assert result is None
+
+
+def test_resolve_iyjh_paths_returns_4_paths(tmp_path):
+    vis  = str(tmp_path / "EUC_MER_BGSUB-MOSAIC-VIS_TILE102000001-ABC_20240101T000000.0Z_v1.fits")
+    niry = str(tmp_path / "EUC_MER_BGSUB-MOSAIC-NIR-Y_TILE102000001-ABC_20240101T000000.0Z_v1.fits")
+    nirj = str(tmp_path / "EUC_MER_BGSUB-MOSAIC-NIR-J_TILE102000001-ABC_20240101T000000.0Z_v1.fits")
+    nirh = str(tmp_path / "EUC_MER_BGSUB-MOSAIC-NIR-H_TILE102000001-ABC_20240101T000000.0Z_v1.fits")
+    for p in [vis, niry, nirj, nirh]:
+        Path(p).touch()
+
+    with patch("make_q1_colour_cutouts.find_fits_paths_any_release", return_value=[vis, niry, nirj]):
+        result = m.resolve_iyjh_paths(102000001, 10.0, -27.0)
+    assert result is not None
+    assert len(result) == 4
+    assert any("NIR-H" in p for p in result)

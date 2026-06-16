@@ -24,9 +24,8 @@ if _CUTANA_ROOT not in sys.path:
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-# azulero_render and find_fits_paths_any_release are imported lazily inside
-# functions that need them so this module can be imported without azulero/cutana
-# being installed (e.g. during unit tests of parse_source_id / load_sources).
+from fits_path_utils import find_fits_paths_any_release  # noqa: E402
+from cutana_datalabs import azulero_render  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -80,6 +79,21 @@ def load_sources(parquet_path: str, coords_csv: str) -> pd.DataFrame:
     if n_before > len(df):
         logging.warning(f"{n_before - len(df)} sources had no RA/Dec match — dropped")
     return df[["source_id", "tile_id", "ra", "dec"]]
+
+
+def resolve_iyjh_paths(tile_id: int, ra: float, dec: float) -> list[str] | None:
+    """Resolve 4 IYJH FITS paths for tile_id from Q1_RELEASE_DIRS.
+
+    Uses find_fits_paths_any_release for VIS/NIR_Y/NIR_J, then
+    azulero_render.find_iyjh_paths to glob NIR_H.
+    Returns None if any band is missing.
+    """
+    paths_3 = find_fits_paths_any_release(
+        tile_id, BANDS_3, Q1_RELEASE_DIRS, BAND_TO_INST, ra=ra, dec=dec
+    )
+    if paths_3 is None:
+        return None
+    return azulero_render.find_iyjh_paths(paths_3)
 
 
 # Runtime imports (used by functions added in later tasks):
