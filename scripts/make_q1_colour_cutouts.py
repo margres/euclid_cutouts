@@ -1,6 +1,7 @@
 """
-Produce azulero JPEG + eummy PNG colour cutouts for all ~1.08M Q1 BYOL sources.
+Produce azulero JPEG + eummy PNG colour cutouts for Euclid BYOL sources.
 
+Works with Q1 and DR1 data — set the CONFIG block below for the target release.
 Processes one tile at a time via multiprocessing. Each tile: resolves FITS paths,
 renders azulero JPEGs (in-memory, per-source), runs eummy CLI (whole tile), renames.
 
@@ -38,14 +39,29 @@ from cutana_datalabs import azulero_render  # noqa: E402
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
+# Source list: parquet index gives source IDs; coords CSV provides RA/Dec.
 INPUT_PARQUET    = "/media/user/astronomaly-euclid/q1_SL_data/features_pca_97_swin_mtf_vis_y_j_200k.parquet"
 COORDS_CSV       = "/media/user/search_engine_catalogue/almost_full_q1.csv"
+
+# Column names in COORDS_CSV (lowercase; adjust if your DR1 coords CSV differs)
+COORDS_ID_COL    = "object_id"
+COORDS_RA_COL    = "right_ascension"
+COORDS_DEC_COL   = "declination"
+
+# Output directories
 AZULERO_OUT      = "/media/user/cutana_dr1_pipeline/results/q1_colour/azulero"
 EUMMY_OUT        = "/media/user/cutana_dr1_pipeline/results/q1_colour/eummy"
+
 CUTOUT_PIXELS    = 101
 CUTOUT_ARCSEC    = 10.1
-N_WORKERS        = max(1, os.cpu_count() // 2)
-Q1_RELEASE_DIRS  = ["/media/home/data/euclid_q1/Q1_R1"]
+N_WORKERS        = 1
+
+# Release dirs, tried in order — first complete set of FITS wins (put R2 before R1).
+# Q1 (R1 only):
+RELEASE_DIRS     = ["/media/home/data/euclid_q1/Q1_R1"]
+# DR1 (R2 first, fall back to R1):
+# RELEASE_DIRS   = ["/media/home/data/euclid_idr1/DR1/R2", "/media/home/data/euclid_idr1/DR1/R1"]
+
 BANDS_3          = ["VIS", "NIR_Y", "NIR_J"]   # NIR_H derived by azulero_render.find_iyjh_paths
 BAND_TO_INST     = {"VIS": "VIS", "NIR_Y": "NISP", "NIR_J": "NISP"}
 # ── END CONFIG ────────────────────────────────────────────────────────────────
@@ -75,12 +91,12 @@ def load_sources(parquet_path: str, coords_csv: str) -> pd.DataFrame:
         "object_id": [o for _, o in parsed],
     })
 
-    coords = pd.read_csv(coords_csv, usecols=["object_id", "right_ascension", "declination"])
+    coords = pd.read_csv(coords_csv, usecols=[COORDS_ID_COL, COORDS_RA_COL, COORDS_DEC_COL])
     # object_id is globally unique in the Euclid MER catalog, so joining on
     # object_id alone (without tile_id) is safe — each object_id maps to exactly
     # one sky position regardless of which tile it was detected in.
-    df = df.merge(coords, on="object_id", how="left").rename(
-        columns={"right_ascension": "ra", "declination": "dec"}
+    df = df.merge(coords, left_on="object_id", right_on=COORDS_ID_COL, how="left").rename(
+        columns={COORDS_RA_COL: "ra", COORDS_DEC_COL: "dec"}
     )
     n_before = len(df)
     df = df.dropna(subset=["ra", "dec"]).reset_index(drop=True)
@@ -97,7 +113,7 @@ def resolve_iyjh_paths(tile_id: int, ra: float, dec: float) -> list[str] | None:
     Returns None if any band is missing.
     """
     paths_3 = find_fits_paths_any_release(
-        tile_id, BANDS_3, Q1_RELEASE_DIRS, BAND_TO_INST, ra=ra, dec=dec
+        tile_id, BANDS_3, RELEASE_DIRS, BAND_TO_INST, ra=ra, dec=dec
     )
     if paths_3 is None:
         return None
