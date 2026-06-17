@@ -123,6 +123,23 @@ def _lookup_tile_indices(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+_RA_ALIASES  = ["ra", "right_ascension", "target_ra"]
+_DEC_ALIASES = ["dec", "declination", "target_dec"]
+
+
+def _normalise_radec(df: pd.DataFrame) -> pd.DataFrame:
+    """Rename RA/Dec columns to 'ra' and 'dec', case-insensitive."""
+    cols_lower = {c.lower().strip(): c for c in df.columns}
+    ra_col = next((cols_lower[a] for a in _RA_ALIASES if a in cols_lower), None)
+    dec_col = next((cols_lower[a] for a in _DEC_ALIASES if a in cols_lower), None)
+    if ra_col is None or dec_col is None:
+        raise ValueError(
+            f"CSV must have RA and Dec columns (accepted: {_RA_ALIASES} / {_DEC_ALIASES}), "
+            f"found: {list(df.columns)}"
+        )
+    return df.rename(columns={ra_col: "ra", dec_col: "dec"})
+
+
 def load_sources(csv_path: str) -> pd.DataFrame:
     """Load and normalise sources from csv_path.
 
@@ -130,9 +147,7 @@ def load_sources(csv_path: str) -> pd.DataFrame:
     """
     df = pd.read_csv(csv_path)
     df.columns = df.columns.str.lower().str.strip()
-
-    if "ra" not in df.columns or "dec" not in df.columns:
-        raise ValueError("CSV must have 'ra' and 'dec' columns")
+    df = _normalise_radec(df)
 
     # id — filename stem; if absent, defaults to row index
     if "id" in df.columns:

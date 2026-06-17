@@ -62,6 +62,28 @@ def test_load_sources_size_arcsec_conversion(tmp_path):
     assert df["size_pixel"].iloc[0] == expected
 
 
+def test_load_sources_right_ascension_declination(tmp_path):
+    csv = tmp_path / "src.csv"
+    _write_csv(csv, right_ascension=[33.9], declination=[-45.5], tile_index=[102018212])
+
+    with patch.object(m, "TILE_CENTRES_CSV", None):
+        df = m.load_sources(str(csv))
+
+    assert df["ra"].iloc[0] == 33.9
+    assert df["dec"].iloc[0] == -45.5
+
+
+def test_load_sources_target_ra_dec(tmp_path):
+    csv = tmp_path / "src.csv"
+    _write_csv(csv, target_ra=[33.9], target_dec=[-45.5], tile_index=[102018212])
+
+    with patch.object(m, "TILE_CENTRES_CSV", None):
+        df = m.load_sources(str(csv))
+
+    assert df["ra"].iloc[0] == 33.9
+    assert df["dec"].iloc[0] == -45.5
+
+
 def test_load_sources_default_size(tmp_path):
     csv = tmp_path / "src.csv"
     _write_csv(csv, ra=[33.9], dec=[-45.5], tile_index=[102018212])
