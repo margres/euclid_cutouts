@@ -25,18 +25,29 @@ Output lands in `cutouts/azulero/` (JPEGs) and `cutouts/eummy/` (PNGs), flat.
 
 ## Input CSV columns
 
-Only `ra` and `dec` are required. Everything else is optional — the pipeline
+Only RA and Dec are required. Everything else is optional — the pipeline
 fills in sensible defaults.
 
 | Column | Required | Default | Description |
 |---|---|---|---|
-| `ra` | **yes** | — | Right ascension (deg) |
-| `dec` | **yes** | — | Declination (deg) |
+| RA | **yes** | — | Right ascension (deg) |
+| Dec | **yes** | — | Declination (deg) |
 | `id` | optional | row index | Output filename stem |
 | `object_id` | optional | — | MER catalog object ID; only needed when `NAMING="q1_slde"` |
 | `tile_index` | optional | HEALPix lookup | Euclid tile ID. Providing it avoids the need for the HEALPix map file, but does not speed up the run — the bottleneck is loading tile FITS data, not the lookup |
 | `size_pixel` | optional | `DEFAULT_CUTOUT_PIXELS` (101) | Cutout size in VIS pixels, per source |
 | `size_arcsec` | optional | — | Cutout size in arcsec (converted to pixels at 0.1"/px; `size_pixel` takes precedence) |
+
+**RA/Dec column names** are auto-detected (case-insensitive):
+
+| RA | Dec |
+|---|---|
+| `ra` | `dec` |
+| `right_ascension` | `declination` |
+| `target_ra` | `target_dec` |
+
+If your CSV uses a different name, set `RA_COL` and `DEC_COL` in the CONFIG
+block to override auto-detection.
 
 When `tile_index` is not provided, the pipeline uses the Euclid tiling HEALPix
 map (`data/tile_index_map.v1.2.fits.gz`, order 13 nested) to resolve it

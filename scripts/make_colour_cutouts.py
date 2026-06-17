@@ -35,7 +35,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 # Input CSV.
-# Required columns : ra, dec
+# Required columns : RA, Dec (auto-detected; see _RA_ALIASES / _DEC_ALIASES)
 # Optional columns :
 #   id              — used as filename stem when NAMING="id" (defaults to row index)
 #   object_id       — MER catalog object ID; required when NAMING="q1_slde"
@@ -44,10 +44,15 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 #   size_arcsec     — cutout size in arcsec, per source (size_pixel takes precedence)
 SOURCES_CSV           = "sources.csv"
 
+# Manual RA/Dec column override. Set to None for auto-detection (recommended),
+# or to your column names if the CSV uses non-standard names.
+RA_COL                = None       # e.g. "my_ra_column"
+DEC_COL               = None       # e.g. "my_dec_column"
+
 # HEALPix tile map — used to resolve tile_index from ra/dec when absent from the CSV.
 # tile_centres.csv is used only to enrich tile_index with release_dir.
-HEALPIX_MAP      = "/media/home/my_workspace/cutana_dr1_pipeline/data/tile_index_map.v1.2.fits.gz"
-TILE_CENTRES_CSV = "/media/home/my_workspace/cutana_dr1_pipeline/tile_centres.csv"
+HEALPIX_MAP      = "/media/home/my_workspace/euclid_cutouts/data/tile_index_map.v1.2.fits.gz"
+TILE_CENTRES_CSV = "/media/home/my_workspace/euclid_cutouts/tile_centres.csv"
 
 # Output root directory. All outputs share this root, in subfolders named
 # after the format/stretch:
@@ -128,15 +133,24 @@ _DEC_ALIASES = ["dec", "declination", "target_dec"]
 
 
 def _normalise_radec(df: pd.DataFrame) -> pd.DataFrame:
-    """Rename RA/Dec columns to 'ra' and 'dec', case-insensitive."""
-    cols_lower = {c.lower().strip(): c for c in df.columns}
-    ra_col = next((cols_lower[a] for a in _RA_ALIASES if a in cols_lower), None)
-    dec_col = next((cols_lower[a] for a in _DEC_ALIASES if a in cols_lower), None)
-    if ra_col is None or dec_col is None:
-        raise ValueError(
-            f"CSV must have RA and Dec columns (accepted: {_RA_ALIASES} / {_DEC_ALIASES}), "
-            f"found: {list(df.columns)}"
-        )
+    """Rename RA/Dec columns to 'ra' and 'dec'.
+
+    Uses RA_COL/DEC_COL if set, otherwise auto-detects from _RA_ALIASES/_DEC_ALIASES.
+    """
+    if RA_COL and DEC_COL:
+        ra_col = next((c for c in df.columns if c.lower().strip() == RA_COL.lower().strip()), None)
+        dec_col = next((c for c in df.columns if c.lower().strip() == DEC_COL.lower().strip()), None)
+        if ra_col is None or dec_col is None:
+            raise ValueError(f"RA_COL={RA_COL!r} or DEC_COL={DEC_COL!r} not found in {list(df.columns)}")
+    else:
+        cols_lower = {c.lower().strip(): c for c in df.columns}
+        ra_col = next((cols_lower[a] for a in _RA_ALIASES if a in cols_lower), None)
+        dec_col = next((cols_lower[a] for a in _DEC_ALIASES if a in cols_lower), None)
+        if ra_col is None or dec_col is None:
+            raise ValueError(
+                f"CSV must have RA and Dec columns (accepted: {_RA_ALIASES} / {_DEC_ALIASES}), "
+                f"found: {list(df.columns)}"
+            )
     return df.rename(columns={ra_col: "ra", dec_col: "dec"})
 
 
