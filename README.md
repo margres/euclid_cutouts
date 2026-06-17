@@ -8,8 +8,8 @@ Produce azulero JPEG and eummy PNG colour cutouts for Euclid Q1 and DR1 sources.
 
 ```csv
 ra,dec
-33.941,-45.5
-52.093,-30.5
+33.941125,-45.500000
+52.093219,-30.499972
 ```
 
 2. Edit the CONFIG block at the top of `scripts/make_colour_cutouts.py` — set
@@ -46,12 +46,11 @@ automatically.
 
 ```
 cutouts/
-  fits/        FITS cutouts (Cutana) — reserved, not yet wired
   azulero/     colour JPEGs (azulero stretch)
   eummy/       colour PNGs  (eummy stretch)
 ```
 
-All three are flat (no per-tile subdirs), mirroring Cutana's default layout.
+Both are flat (no per-tile subdirs), mirroring Cutana's default layout.
 
 ## File naming
 
@@ -80,26 +79,33 @@ When `tile_centres.csv` is present, the pipeline resolves the correct
 `release_dir` per tile automatically — `RELEASE_DIRS` only serves as a
 fallback for tiles not listed in the CSV.
 
-## Auxiliary scripts
+## Repository contents
 
-| Script | Purpose |
-|---|---|
-| `scripts/build_tile_centres.py` | Regenerate `tile_centres.csv` by scanning MER dirs and reading VIS WCS headers |
-| `scripts/fits_path_utils.py` | Shared FITS path resolution (BGSUB-MOSAIC lookup with coverage-aware selection) |
-| `scripts/make_q1_colour_cutouts.py` | Original Q1-only script (superseded by `make_colour_cutouts.py`) |
+```
+scripts/
+  make_colour_cutouts.py        main pipeline (Q1 + DR1)
+  make_q1_colour_cutouts.py     original Q1-only script (kept for provenance)
+  build_tile_centres.py         regenerates tile_centres.csv from MER dirs
+  fits_path_utils.py            shared FITS path resolution
+tests/
+  test_make_colour_cutouts.py   unit tests for the main pipeline
+  test_make_q1_colour_cutouts.py
+cutana_cutouts.ipynb            Cutana UI notebook for interactive cutouts
+```
 
 ## Dependencies
 
 - Python 3.12+
 - `numpy`, `pandas`, `astropy`, `Pillow`
-- `azulero` 2.0 (installed from `/media/home/my_workspace/azulero` or pip)
-- `eummy` (pip install)
+- `azulero` 2.0 (`pip install azulero`)
+- `eummy` (`pip install eummy`)
 - `healpy` (for tile lookup when `tile_index` is absent from the CSV)
-- `cutana` (pip install, for FITS cutout mode — not yet wired)
+- `cutana` (`pip install cutana`)
 
 The `azulero_render` module is imported from
-`astronomaly-euclid/cutana_datalabs/`; make sure that repo is checked out at
-`/media/user/astronomaly-euclid`.
+`astronomaly-euclid/cutana_datalabs/`; make sure that repo is available and
+its path is set in the `_CUTANA_ROOT` variable at the top of
+`make_colour_cutouts.py`.
 
 ## Tests
 
