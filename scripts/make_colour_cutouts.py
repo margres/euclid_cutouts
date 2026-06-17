@@ -57,10 +57,17 @@ TILE_CENTRES_CSV = "/media/home/my_workspace/euclid_cutouts/tile_centres.csv"
 # Output root directory. All outputs share this root, in subfolders named
 # after the format/stretch:
 #   {OUTPUT_DIR}/fits/     — FITS cutouts (Cutana)
-#   {OUTPUT_DIR}/azulero/  — colour JPEGs (azulero stretch)
-#   {OUTPUT_DIR}/eummy/    — colour PNGs  (eummy stretch)
+#   {OUTPUT_DIR}/azulero/  — colour images (azulero stretch)
+#   {OUTPUT_DIR}/eummy/    — colour images (eummy stretch)
 # All three are flat (no per-tile subdirs), mirroring Cutana's default structure.
 OUTPUT_DIR            = "cutouts"
+
+# Output image format for colour cutouts.
+#   "jpg"  — lossy JPEG  (~8 KB/cutout, ~8 GB per 1M cutouts)
+#   "png"  — lossless PNG (~60 KB/cutout, ~63 GB per 1M cutouts)
+AZULERO_FORMAT        = "jpg"
+EUMMY_FORMAT          = "png"
+JPEG_QUALITY          = 95
 
 # File naming convention for output cutouts.
 #   "id"            — use the id column (or row index if absent)
@@ -278,7 +285,8 @@ def _write_tile_catalog(sources: list[dict], catalog_path: str) -> None:
 def rename_eummy_cutouts(tile_dir: str, sources: list[dict],
                          eummy_out_dir: str,
                          match_tol_deg: float = 1.5 / 3600) -> int:
-    """Match eummy PNGs to sources by RA/Dec and move to eummy_out_dir/{id}.png."""
+    """Match eummy PNGs to sources by RA/Dec, convert if needed, and save."""
+    fmt = EUMMY_FORMAT.lower()
     ra_arr  = np.array([s["ra"]  for s in sources])
     dec_arr = np.array([s["dec"] for s in sources])
 
@@ -300,28 +308,34 @@ def rename_eummy_cutouts(tile_dir: str, sources: list[dict],
                             fname, dist[i] * 3600)
             continue
 
-        dest = os.path.join(eummy_out_dir, f"{_make_stem(sources[i])}.png")
+        dest = os.path.join(eummy_out_dir, f"{_make_stem(sources[i])}.{fmt}")
         if os.path.exists(dest):
             continue
-        os.replace(png_path, dest)
+        if fmt == "png":
+            os.replace(png_path, dest)
+        else:
+            Image.open(png_path).convert("RGB").save(dest, quality=JPEG_QUALITY)
+            os.remove(png_path)
         n_renamed += 1
     return n_renamed
 
 
 def render_azulero_tile(iyjh: np.ndarray, wcs: WCS,
                         sources: list[dict], out_dir: str) -> int:
-    """Render azulero JPEGs for all sources in one tile. Returns number written."""
+    """Render azulero images for all sources in one tile. Returns number written."""
+    fmt = AZULERO_FORMAT.lower()
     transform = azulero_render.build_transform()
     n_ok = n_fail = 0
     for src in sources:
-        out_path = os.path.join(out_dir, f"{_make_stem(src)}.jpg")
+        out_path = os.path.join(out_dir, f"{_make_stem(src)}.{fmt}")
         if os.path.exists(out_path):
             continue
         try:
             size   = int(src.get("size_pixel", DEFAULT_CUTOUT_PIXELS))
             cutout = _extract_cutout(iyjh, wcs, src["ra"], src["dec"], size)
             rgb    = azulero_render.render_rgb_uint8(cutout, transform)
-            Image.fromarray(rgb).save(out_path, format="JPEG", quality=95)
+            save_kw = {"quality": JPEG_QUALITY} if fmt == "jpg" else {}
+            Image.fromarray(rgb).save(out_path, **save_kw)
             n_ok += 1
         except Exception:
             logging.exception("  azulero render failed for %s", src["id"])
@@ -364,10 +378,12 @@ def process_tile(args: tuple) -> tuple[int, int, int, int]:
     tile_id, sources, azulero_out, eummy_out = args
 
     # Skip tiles already processed (azulero render failures are data-driven
-    # and will just repeat, so only require at least one JPG to exist).
+    # and will just repeat, so only require at least one output to exist).
+    az_fmt = AZULERO_FORMAT.lower()
+    em_fmt = EUMMY_FORMAT.lower()
     stems = [_make_stem(s) for s in sources]
-    az_exists = sum(1 for st in stems if os.path.exists(os.path.join(azulero_out, f"{st}.jpg")))
-    em_exists = sum(1 for st in stems if os.path.exists(os.path.join(eummy_out, f"{st}.png")))
+    az_exists = sum(1 for st in stems if os.path.exists(os.path.join(azulero_out, f"{st}.{az_fmt}")))
+    em_exists = sum(1 for st in stems if os.path.exists(os.path.join(eummy_out, f"{st}.{em_fmt}")))
     if az_exists > 0 and em_exists == len(sources):
         return tile_id, 0, 0, 0
 
