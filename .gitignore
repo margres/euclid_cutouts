@@ -14,5 +14,9 @@ data/
 results/
 cutouts/
 
+# One-off benchmark / mosaic / batch scripts (kept locally, not in repo)
+scripts/benchmarks/
+scripts/jobs_200k/
+
 # Claude Code session artifacts
 docs/superpowers/
