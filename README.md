@@ -25,20 +25,22 @@ Output lands in `cutouts/azulero/` (JPEGs) and `cutouts/eummy/` (PNGs), flat.
 
 ## Input CSV columns
 
-| Column | Required | Description |
-|---|---|---|
-| `ra` | yes | Right ascension (deg) |
-| `dec` | yes | Declination (deg) |
-| `id` | no | Output filename stem (defaults to row index) |
-| `object_id` | no | MER catalog object ID; required when `NAMING="q1_slde"` |
-| `tile_index` | no | Euclid tile ID. Auto-resolved via HEALPix map if absent |
-| `size_pixel` | no | Cutout size in VIS pixels, per source |
-| `size_arcsec` | no | Cutout size in arcsec (converted to pixels; `size_pixel` takes precedence) |
+Only `ra` and `dec` are required. Everything else is optional — the pipeline
+fills in sensible defaults.
+
+| Column | Required | Default | Description |
+|---|---|---|---|
+| `ra` | **yes** | — | Right ascension (deg) |
+| `dec` | **yes** | — | Declination (deg) |
+| `id` | optional | row index | Output filename stem |
+| `object_id` | optional | — | MER catalog object ID; only needed when `NAMING="q1_slde"` |
+| `tile_index` | optional | HEALPix lookup | Euclid tile ID. Providing it avoids the need for the HEALPix map file, but does not speed up the run — the bottleneck is loading tile FITS data, not the lookup |
+| `size_pixel` | optional | `DEFAULT_CUTOUT_PIXELS` (101) | Cutout size in VIS pixels, per source |
+| `size_arcsec` | optional | — | Cutout size in arcsec (converted to pixels at 0.1"/px; `size_pixel` takes precedence) |
 
 When `tile_index` is not provided, the pipeline uses the Euclid tiling HEALPix
 map (`data/tile_index_map.v1.2.fits.gz`, order 13 nested) to resolve it
-automatically.  When neither `size_pixel` nor `size_arcsec` are given, all
-cutouts use `DEFAULT_CUTOUT_PIXELS` from the config (101 px by default).
+automatically.
 
 ## Output structure
 
