@@ -363,6 +363,14 @@ def process_tile(args: tuple) -> tuple[int, int, int, int]:
     """Per-tile worker. Returns (tile_id, n_azulero_ok, n_eummy_ok, n_skipped)."""
     tile_id, sources, azulero_out, eummy_out = args
 
+    # Skip tiles already processed (azulero render failures are data-driven
+    # and will just repeat, so only require at least one JPG to exist).
+    stems = [_make_stem(s) for s in sources]
+    az_exists = sum(1 for st in stems if os.path.exists(os.path.join(azulero_out, f"{st}.jpg")))
+    em_exists = sum(1 for st in stems if os.path.exists(os.path.join(eummy_out, f"{st}.png")))
+    if az_exists > 0 and em_exists == len(sources):
+        return tile_id, 0, 0, 0
+
     ra0  = sources[0]["ra"]
     dec0 = sources[0]["dec"]
     release_dir = sources[0].get("release_dir")

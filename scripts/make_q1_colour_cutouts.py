@@ -49,8 +49,8 @@ COORDS_RA_COL    = "right_ascension"
 COORDS_DEC_COL   = "declination"
 
 # Output directories
-AZULERO_OUT      = "/media/user/cutana_dr1_pipeline/results/q1_colour/azulero"
-EUMMY_OUT        = "/media/user/cutana_dr1_pipeline/results/q1_colour/eummy"
+AZULERO_OUT      = "/media/user/euclid_cutouts/results/q1_colour/azulero"
+EUMMY_OUT        = "/media/user/euclid_cutouts/results/q1_colour/eummy"
 
 CUTOUT_PIXELS    = 101
 CUTOUT_ARCSEC    = 10.1
@@ -277,6 +277,15 @@ def process_tile(args: tuple) -> tuple[int, int, int, int]:
     Returns: (tile_id, n_azulero_ok, n_eummy_ok, n_skipped).
     """
     tile_id, sources, azulero_out, eummy_out = args
+
+    # Skip tiles already processed (azulero dir exists = azulero pass ran; eummy
+    # outputs present = eummy pass ran).  Azulero render failures are data-driven
+    # and will just repeat, so don't require every JPG to exist.
+    az_tile_dir = os.path.join(azulero_out, str(tile_id))
+    az_done = os.path.isdir(az_tile_dir) and len(os.listdir(az_tile_dir)) > 0
+    em_done = all(os.path.exists(os.path.join(eummy_out, f"{s['source_id']}.png")) for s in sources)
+    if az_done and em_done:
+        return tile_id, 0, 0, 0
 
     # Resolve FITS paths using first source's RA/Dec for coverage check
     ra0, dec0 = sources[0]["ra"], sources[0]["dec"]
