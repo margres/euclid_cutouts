@@ -223,6 +223,7 @@ def test_process_tile_skips_missing_fits(tmp_path, monkeypatch):
               "size_pixel": 101, "release_dir": None}],
             str(tmp_path / "az"),
             str(tmp_path / "em"),
+            {},
         ))
-    tile_id, n_az, n_em, n_skip = result
+    tile_id, n_az, n_em, bulk_counts, n_skip = result
     assert n_az == 0 and n_em == 0 and n_skip == 1

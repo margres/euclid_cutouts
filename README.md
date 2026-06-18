@@ -57,11 +57,14 @@ automatically.
 
 ```
 cutouts/
-  azulero/     colour JPEGs (azulero stretch)
-  eummy/       colour PNGs  (eummy stretch)
+  azulero/            colour JPEGs (azulero stretch)
+  eummy/              colour PNGs  (eummy stretch)
+  gz_arcsinh_vis_y/   GZ arcsinh VIS+Y (bulk_euclid)
+  sw_mtf_vis_y_j/     SW MTF VIS+Y+J   (bulk_euclid)
+  ...                 one dir per BULK_EUCLID_OUTPUTS entry
 ```
 
-Both are flat (no per-tile subdirs), mirroring Cutana's default layout.
+All are flat (no per-tile subdirs), mirroring Cutana's default layout.
 
 ## File naming
 
@@ -104,19 +107,97 @@ tests/
 cutana_cutouts.ipynb            Cutana UI notebook for interactive cutouts
 ```
 
+## Colouring pipelines
+
+The cutout extraction and colour rendering rely on four tools developed
+within (or for) the Euclid Consortium. Each renderer can be toggled
+independently via the `ENABLE_*` flags in the CONFIG block:
+
+### Cutana
+
+[Cutana](https://github.com/esa/Cutana) (ESA;
+[arXiv:2511.04429](https://arxiv.org/abs/2511.04429)) is a high-performance
+Python pipeline for creating astronomical image cutouts from large FITS
+datasets. It provides an interactive Jupyter UI and a programmatic
+`Orchestrator` API with dynamic memory management, intelligent load balancing,
+multi-channel FITS processing, flux-conserved resizing via drizzle, and WCS
+preservation. This repository uses Cutana both directly (via
+`cutana_cutouts.ipynb`) and indirectly — `make_colour_cutouts.py` reads the
+same per-tile FITS stacks that Cutana resolves.
+
+- Input: source catalogue (SourceID, RA, Dec, diameter, FITS paths) + MER tile stacks
+- Output: multi-band FITS cutouts (or ZARR), with optional interactive UI
+- Install: `pip install cutana`
+
+### azulero
+
+[azulero](https://doi.org/10.24400/815952/Azulero) (Basset et al.) is CNES's
+colour-rendering package for Euclid tiles. It combines the four MER stack bands
+(VIS, NIR-Y, NIR-J, NIR-H) into an LRGB composite using an asinh stretch,
+per-band sharpening, dead-pixel inpainting, and configurable hue/saturation
+mapping. This pipeline uses azulero's Python API (`azulero.image.color`,
+`azulero.image.mask`) through the `azulero_render` wrapper in
+`astronomaly-euclid/cutana_datalabs/`, which renders individual cutouts
+in-memory rather than processing whole tiles via the `azul process` CLI.
+
+- Input: 4-band IYJH (VIS, NIR-Y, NIR-J, NIR-H) cutout arrays
+- Output: JPEG colour images (one per source)
+- Install: `pip install azulero`
+
+### eummy
+
+[eummy](https://github.com/schirmermischa/eummy) (Schirmer, M.) creates colour
+images from Euclid MER stacks using a contrast-based rendering with
+configurable black/white thresholds, per-band scaling, and optional
+colour-vision-deficiency simulation. It operates as a CLI tool that processes
+whole tiles, after which the pipeline matches and renames the output cutouts
+to source IDs by RA/Dec proximity.
+
+- Input: 4-band FITS stacks (I, Y, J, H) on disk
+- Output: PNG colour images (one per source, extracted from tile-level output)
+- Install: `pip install eummy`
+
+### bulk_euclid (GZ arcsinh + Space Warps MTF)
+
+[bulk-euclid-cutouts](https://github.com/mwalmsley/bulk-euclid-cutouts)
+(Walmsley, M.) is the pipeline behind
+[Galaxy Zoo Euclid](https://www.esa.int/Science_Exploration/Space_Science/Euclid/Euclid_Galaxy_Zoo_help_us_classify_the_shapes_of_galaxies)
+and the Space Warps strong-lensing cutout campaigns. It provides two families
+of colour stretch:
+
+- **GZ arcsinh** — the Galaxy Zoo rendering: per-band asinh dynamic-range
+  compression, VIS+NISP compositing, and optional low-surface-brightness
+  enhancement. Variants: `gz_arcsinh_vis_y` (VIS+Y), `gz_arcsinh_vis_only`,
+  `gz_arcsinh_triple` (VIS+Y+J).
+- **SW MTF** — the Space Warps midtone-transfer function (courtesy Tian Li):
+  automatic "curves"-style contrast adjustment via a midtone balance parameter,
+  with LAB-space luminosity replacement for multi-band composites. Variants:
+  `sw_mtf_vis_only`, `sw_mtf_vis_y`, `sw_mtf_vis_y_j`.
+
+Select which variants to produce by editing the `BULK_EUCLID_OUTPUTS` list in
+the CONFIG block.
+
+- Input: per-source VIS / NIR-Y / NIR-J cutout arrays (extracted from the same
+  IYJH tile data used by azulero)
+- Output: JPEG colour images (one per source per variant)
+- Install: `pip install -e /path/to/bulk-euclid-cutouts` (or add its root to
+  `_BULK_EUCLID_ROOT` in `make_colour_cutouts.py`)
+
 ## Dependencies
 
 - Python 3.12+
-- `numpy`, `pandas`, `astropy`, `Pillow`
+- `numpy`, `pandas`, `astropy`, `Pillow`, `opencv-python`
 - `azulero` 2.0 (`pip install azulero`)
 - `eummy` (`pip install eummy`)
+- `bulk-euclid-cutouts` (`pip install -e /path/to/bulk-euclid-cutouts`)
 - `healpy` (for tile lookup when `tile_index` is absent from the CSV)
 - `cutana` (`pip install cutana`)
 
 The `azulero_render` module is imported from
 `astronomaly-euclid/cutana_datalabs/`; make sure that repo is available and
 its path is set in the `_CUTANA_ROOT` variable at the top of
-`make_colour_cutouts.py`.
+`make_colour_cutouts.py`. The `bulk_euclid` package is imported from
+`bulk-euclid-cutouts/`; set `_BULK_EUCLID_ROOT` accordingly.
 
 ## Tests
 

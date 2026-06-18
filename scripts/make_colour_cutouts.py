@@ -1,5 +1,6 @@
 """
-Produce azulero JPEG + eummy PNG colour cutouts for Euclid sources.
+Produce colour cutouts for Euclid sources using four renderers:
+azulero, eummy, bulk_euclid GZ arcsinh, and bulk_euclid SW MTF.
 
 Works with Q1 and DR1. Input is a CSV with at minimum ra and dec columns.
 See CONFIG block for all options.
@@ -26,12 +27,26 @@ from PIL import Image
 _CUTANA_ROOT = "/media/user/astronomaly-euclid"
 if _CUTANA_ROOT not in sys.path:
     sys.path.insert(0, _CUTANA_ROOT)
+
+_BULK_EUCLID_ROOT = "/media/user/bulk-euclid-cutouts"
+if _BULK_EUCLID_ROOT not in sys.path:
+    sys.path.insert(0, _BULK_EUCLID_ROOT)
+
 sys.path.insert(0, os.path.dirname(__file__))
 
 from fits_path_utils import find_fits_paths_any_release, find_fits_paths  # noqa: E402
 from cutana_datalabs import azulero_render  # noqa: E402
+from bulk_euclid.utils.cutout_utils import (  # noqa: E402
+    make_composite_cutout,
+    make_triple_cutout,
+    apply_MTF,
+    replace_luminosity_channel,
+)
+from bulk_euclid.utils.morphology_utils_ou_mer import (  # noqa: E402
+    make_vis_only_cutout,
+)
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 # Input CSV.
@@ -56,18 +71,39 @@ TILE_CENTRES_CSV = "/media/home/my_workspace/euclid_cutouts/tile_centres.csv"
 
 # Output root directory. All outputs share this root, in subfolders named
 # after the format/stretch:
-#   {OUTPUT_DIR}/fits/     — FITS cutouts (Cutana)
-#   {OUTPUT_DIR}/azulero/  — colour images (azulero stretch)
-#   {OUTPUT_DIR}/eummy/    — colour images (eummy stretch)
-# All three are flat (no per-tile subdirs), mirroring Cutana's default structure.
+#   {OUTPUT_DIR}/fits/           — FITS cutouts (Cutana)
+#   {OUTPUT_DIR}/azulero/        — colour images (azulero stretch)
+#   {OUTPUT_DIR}/eummy/          — colour images (eummy stretch)
+#   {OUTPUT_DIR}/{variant}/      — one subfolder per BULK_EUCLID_OUTPUTS entry
+# All are flat (no per-tile subdirs), mirroring Cutana's default structure.
 OUTPUT_DIR            = "cutouts"
 
 # Output image format for colour cutouts.
 #   "jpg"  — lossy JPEG  (~8 KB/cutout, ~8 GB per 1M cutouts)
 #   "png"  — lossless PNG (~60 KB/cutout, ~63 GB per 1M cutouts)
+# Enable/disable each renderer independently.
+ENABLE_AZULERO        = True
+ENABLE_EUMMY          = True
+ENABLE_BULK_EUCLID    = True
+
 AZULERO_FORMAT        = "jpg"
 EUMMY_FORMAT          = "png"
+BULK_EUCLID_FORMAT    = "jpg"
 JPEG_QUALITY          = 95
+
+# bulk_euclid colour outputs to produce.
+# GZ (Galaxy Zoo) arcsinh variants:
+#   "gz_arcsinh_vis_y"     — VIS+Y composite (default Galaxy Zoo rendering)
+#   "gz_arcsinh_vis_only"  — VIS-only arcsinh
+#   "gz_arcsinh_triple"    — VIS+Y+J three-band composite
+# SW (Space Warps) MTF variants:
+#   "sw_mtf_vis_only"      — VIS-only midtone transfer
+#   "sw_mtf_vis_y"         — VIS+Y MTF with LAB luminosity replacement
+#   "sw_mtf_vis_y_j"       — VIS+Y+J MTF (best for strong lensing)
+BULK_EUCLID_OUTPUTS   = [
+    "gz_arcsinh_vis_y",
+    "sw_mtf_vis_y_j",
+]
 
 # File naming convention for output cutouts.
 #   "id"            — use the id column (or row index if absent)
@@ -80,6 +116,7 @@ DEFAULT_CUTOUT_PIXELS = 101
 VIS_ARCSEC_PER_PX     = 0.1   # VIS plate scale (arcsec per pixel)
 
 N_WORKERS             = 1
+PROGRESS_BAR          = False  # set True to show a tqdm progress bar (requires `pip install tqdm`)
 
 # Fallback release dirs — searched in order when a tile is not in TILE_CENTRES_CSV.
 # Q1 (R1 only):
@@ -346,6 +383,90 @@ def render_azulero_tile(iyjh: np.ndarray, wcs: WCS,
     return n_ok
 
 
+def render_bulk_euclid_tile(iyjh: np.ndarray, wcs: WCS,
+                           sources: list[dict],
+                           out_dirs: dict[str, str]) -> dict[str, int]:
+    """Render bulk_euclid GZ/SW colour images for all sources in one tile.
+
+    out_dirs maps variant name (e.g. "gz_arcsinh_vis_y") to its output directory.
+    Returns {variant: n_written}.
+    """
+    import cv2  # noqa: F811 — needed by replace_luminosity_channel
+    cv2.setNumThreads(1)
+
+    counts: dict[str, int] = {v: 0 for v in out_dirs}
+    if not out_dirs:
+        return counts
+
+    needs_y = any(v for v in out_dirs if "vis_y" in v)
+    needs_j = any(v for v in out_dirs if "vis_y_j" in v or "triple" in v)
+
+    fmt = BULK_EUCLID_FORMAT.lower()
+    save_kw = {"quality": JPEG_QUALITY} if fmt == "jpg" else {}
+
+    for src in sources:
+        stem = _make_stem(src)
+        size = int(src.get("size_pixel", DEFAULT_CUTOUT_PIXELS))
+        cutout = _extract_cutout(iyjh, wcs, src["ra"], src["dec"], size)
+        vis_im = cutout[0]  # VIS (I)
+        y_im = cutout[1] if needs_y else None   # NIR-Y
+        j_im = cutout[2] if needs_j else None   # NIR-J
+
+        for variant, out_dir in out_dirs.items():
+            out_path = os.path.join(out_dir, f"{stem}.{fmt}")
+            if os.path.exists(out_path):
+                continue
+            try:
+                rgb = _render_bulk_variant(variant, vis_im, y_im, j_im)
+                if rgb is None:
+                    continue
+                Image.fromarray(rgb).save(out_path, **save_kw)
+                counts[variant] += 1
+            except Exception:
+                logging.exception("  bulk_euclid %s failed for %s", variant, src["id"])
+
+    return counts
+
+
+def _render_bulk_variant(variant: str, vis: np.ndarray,
+                         y: np.ndarray | None,
+                         j: np.ndarray | None) -> np.ndarray | None:
+    """Dispatch to the correct bulk_euclid rendering function."""
+    if variant == "gz_arcsinh_vis_y":
+        return make_composite_cutout(vis.copy(), y.copy(), vis_q=100, nisp_q=0.2)
+
+    if variant == "gz_arcsinh_vis_only":
+        grey = make_vis_only_cutout(vis.copy(), q=100)
+        return np.stack([grey, grey, grey], axis=2)
+
+    if variant == "gz_arcsinh_triple":
+        return make_triple_cutout(vis.copy(), y.copy(), j.copy(),
+                                  short_q=100, mid_q=0.2, long_q=0.1)
+
+    if variant == "sw_mtf_vis_only":
+        vis_mtf = apply_MTF(vis.copy())
+        return np.stack([vis_mtf, vis_mtf, vis_mtf], axis=2)
+
+    if variant == "sw_mtf_vis_y":
+        vis_mtf = apply_MTF(vis.copy())
+        y_mtf = apply_MTF(y.copy())
+        mean_mtf = np.mean([vis_mtf, y_mtf], axis=0).astype(np.uint8)
+        rgb = np.stack([y_mtf, mean_mtf, vis_mtf], axis=2)
+        return replace_luminosity_channel(rgb, rgb_channel_for_luminosity=2,
+                                          desaturate_speckles=False)
+
+    if variant == "sw_mtf_vis_y_j":
+        vis_mtf = apply_MTF(vis.copy())
+        y_mtf = apply_MTF(y.copy())
+        j_mtf = apply_MTF(j.copy())
+        rgb = np.stack([j_mtf, y_mtf, vis_mtf], axis=2)
+        return replace_luminosity_channel(rgb, rgb_channel_for_luminosity=2,
+                                          desaturate_speckles=False)
+
+    logging.warning("Unknown bulk_euclid variant: %s", variant)
+    return None
+
+
 def run_eummy_tile(iyjh_paths: list[str], sources: list[dict],
                    tile_dir: str, eummy_out_dir: str) -> int:
     """Run eummy for one tile and rename outputs to {id}.png. Returns count produced."""
@@ -373,19 +494,23 @@ def _init_worker():
     cv2.setNumThreads(1)
 
 
-def process_tile(args: tuple) -> tuple[int, int, int, int]:
-    """Per-tile worker. Returns (tile_id, n_azulero_ok, n_eummy_ok, n_skipped)."""
-    tile_id, sources, azulero_out, eummy_out = args
+def process_tile(args: tuple) -> tuple[int, int, int, dict[str, int], int]:
+    """Per-tile worker. Returns (tile_id, n_azulero, n_eummy, bulk_counts, n_skipped)."""
+    tile_id, sources, azulero_out, eummy_out, bulk_out_dirs = args
 
-    # Skip tiles already processed (azulero render failures are data-driven
-    # and will just repeat, so only require at least one output to exist).
+    # Skip tiles already fully processed.
     az_fmt = AZULERO_FORMAT.lower()
     em_fmt = EUMMY_FORMAT.lower()
+    be_fmt = BULK_EUCLID_FORMAT.lower()
     stems = [_make_stem(s) for s in sources]
     az_exists = sum(1 for st in stems if os.path.exists(os.path.join(azulero_out, f"{st}.{az_fmt}")))
     em_exists = sum(1 for st in stems if os.path.exists(os.path.join(eummy_out, f"{st}.{em_fmt}")))
-    if az_exists > 0 and em_exists == len(sources):
-        return tile_id, 0, 0, 0
+    be_exists = all(
+        all(os.path.exists(os.path.join(d, f"{st}.{be_fmt}")) for st in stems)
+        for d in bulk_out_dirs.values()
+    ) if bulk_out_dirs else True
+    if az_exists > 0 and em_exists == len(sources) and be_exists:
+        return tile_id, 0, 0, {v: 0 for v in bulk_out_dirs}, 0
 
     ra0  = sources[0]["ra"]
     dec0 = sources[0]["dec"]
@@ -395,9 +520,9 @@ def process_tile(args: tuple) -> tuple[int, int, int, int]:
     if iyjh_paths is None:
         logging.warning("Tile %s: FITS not found — skipping %d sources",
                         tile_id, len(sources))
-        return tile_id, 0, 0, len(sources)
+        return tile_id, 0, 0, {v: 0 for v in bulk_out_dirs}, len(sources)
 
-    # ── Azulero pass ────────────────────────────────────────────────────────
+    # ── Load tile data ──────────────────────────────────────────────────────
     handles = [fits.open(p, memmap=True) for p in iyjh_paths]
     try:
         iyjh = np.stack([h[0].data.astype(np.float32) for h in handles])
@@ -406,20 +531,31 @@ def process_tile(args: tuple) -> tuple[int, int, int, int]:
         for h in handles:
             h.close()
 
-    n_azulero = render_azulero_tile(iyjh, wcs, sources, azulero_out)
+    # ── Azulero pass ────────────────────────────────────────────────────────
+    n_azulero = 0
+    if ENABLE_AZULERO:
+        n_azulero = render_azulero_tile(iyjh, wcs, sources, azulero_out)
+
+    # ── bulk_euclid pass (GZ + SW) ──────────────────────────────────────────
+    bulk_counts = {v: 0 for v in bulk_out_dirs}
+    if ENABLE_BULK_EUCLID and bulk_out_dirs:
+        bulk_counts = render_bulk_euclid_tile(iyjh, wcs, sources, bulk_out_dirs)
+
     del iyjh
 
     # ── Eummy pass ──────────────────────────────────────────────────────────
-    em_tile_dir = os.path.join(eummy_out, f"_tile_ws_{tile_id}")
-    try:
-        n_eummy = run_eummy_tile(iyjh_paths, sources, em_tile_dir, eummy_out)
-    except subprocess.CalledProcessError:
-        logging.exception("Tile %s: eummy failed", tile_id)
-        n_eummy = 0
-    finally:
-        shutil.rmtree(em_tile_dir, ignore_errors=True)
+    n_eummy = 0
+    if ENABLE_EUMMY:
+        em_tile_dir = os.path.join(eummy_out, f"_tile_ws_{tile_id}")
+        try:
+            n_eummy = run_eummy_tile(iyjh_paths, sources, em_tile_dir, eummy_out)
+        except subprocess.CalledProcessError:
+            logging.exception("Tile %s: eummy failed", tile_id)
+            n_eummy = 0
+        finally:
+            shutil.rmtree(em_tile_dir, ignore_errors=True)
 
-    return tile_id, n_azulero, n_eummy, 0
+    return tile_id, n_azulero, n_eummy, bulk_counts, 0
 
 
 def main():
@@ -429,37 +565,71 @@ def main():
 
     azulero_out = os.path.join(OUTPUT_DIR, "azulero")
     eummy_out   = os.path.join(OUTPUT_DIR, "eummy")
-    os.makedirs(azulero_out, exist_ok=True)
-    os.makedirs(eummy_out,   exist_ok=True)
+    if ENABLE_AZULERO:
+        os.makedirs(azulero_out, exist_ok=True)
+    if ENABLE_EUMMY:
+        os.makedirs(eummy_out, exist_ok=True)
+
+    bulk_out_dirs: dict[str, str] = {}
+    if ENABLE_BULK_EUCLID:
+        for variant in BULK_EUCLID_OUTPUTS:
+            d = os.path.join(OUTPUT_DIR, variant)
+            os.makedirs(d, exist_ok=True)
+            bulk_out_dirs[variant] = d
+
+    active = []
+    if ENABLE_AZULERO:
+        active.append("azulero")
+    if ENABLE_EUMMY:
+        active.append("eummy")
+    if bulk_out_dirs:
+        active.extend(BULK_EUCLID_OUTPUTS)
+    logging.info("Active renderers: %s", ", ".join(active))
 
     work_items = [
         (int(tile_id),
          group[[c for c in ["id", "object_id", "tile_index", "ra", "dec", "size_pixel", "release_dir"]
                 if c in group.columns]].to_dict("records"),
          azulero_out,
-         eummy_out)
+         eummy_out,
+         bulk_out_dirs)
         for tile_id, group in df.groupby("tile_index")
     ]
 
     n_tiles = len(work_items)
     total_az = total_em = total_skip = done = 0
+    total_bulk: dict[str, int] = {v: 0 for v in bulk_out_dirs}
 
     with mp.Pool(N_WORKERS, initializer=_init_worker) as pool:
-        for tile_id, n_az, n_em, n_skip in pool.imap_unordered(process_tile, work_items):
+        results_iter = pool.imap_unordered(process_tile, work_items)
+        if PROGRESS_BAR:
+            from tqdm import tqdm
+            results_iter = tqdm(results_iter, total=n_tiles, unit="tile",
+                                desc="Rendering cutouts")
+        for tile_id, n_az, n_em, bc, n_skip in results_iter:
             total_az   += n_az
             total_em   += n_em
             total_skip += n_skip
-            done       += 1
-            if done % 50 == 0 or done == n_tiles:
-                logging.info("[%d/%d tiles] azulero=%d  eummy=%d  skipped=%d",
-                             done, n_tiles, total_az, total_em, total_skip)
+            for v, c in bc.items():
+                total_bulk[v] = total_bulk.get(v, 0) + c
+            done += 1
+            if PROGRESS_BAR:
+                bulk_str = "  ".join(f"{v}={total_bulk[v]}" for v in sorted(total_bulk))
+                results_iter.set_postfix_str(
+                    f"az={total_az} em={total_em} {bulk_str} skip={total_skip}")
+            elif done % 50 == 0 or done == n_tiles:
+                bulk_str = "  ".join(f"{v}={total_bulk[v]}" for v in sorted(total_bulk))
+                logging.info("[%d/%d tiles] azulero=%d  eummy=%d  %s  skipped=%d",
+                             done, n_tiles, total_az, total_em, bulk_str, total_skip)
 
-    logging.info(
-        "Done. azulero JPEGs: %d  eummy PNGs: %d  skipped: %d\n"
-        "  azulero → %s/\n"
-        "  eummy   → %s/",
-        total_az, total_em, total_skip, azulero_out, eummy_out,
-    )
+    lines = [f"Done. skipped={total_skip}"]
+    if ENABLE_AZULERO:
+        lines.append(f"  azulero={total_az} → {azulero_out}/")
+    if ENABLE_EUMMY:
+        lines.append(f"  eummy={total_em} → {eummy_out}/")
+    for v, d in bulk_out_dirs.items():
+        lines.append(f"  {v}={total_bulk.get(v, 0)} → {d}/")
+    logging.info("\n".join(lines))
 
 
 if __name__ == "__main__":

@@ -56,6 +56,11 @@ CUTOUT_PIXELS    = 101
 CUTOUT_ARCSEC    = 10.1
 N_WORKERS        = 1
 
+# Output image format: "jpg" (lossy, ~20 KB/cutout) or "png" (lossless, ~60 KB/cutout)
+AZULERO_FORMAT   = "jpg"
+EUMMY_FORMAT     = "jpg"
+JPEG_QUALITY     = 99
+
 # Release dirs, tried in order — first complete set of FITS wins (put R2 before R1).
 # Q1 (R1 only):
 RELEASE_DIRS     = ["/media/home/data/euclid_q1/Q1_R1"]
@@ -206,10 +211,15 @@ def rename_eummy_cutouts(tile_dir: str, sources: list[dict], eummy_out_dir: str,
             continue
 
         source_id = sources[i]["source_id"]
-        dest = os.path.join(eummy_out_dir, f"{source_id}.png")
+        fmt = EUMMY_FORMAT.lower()
+        dest = os.path.join(eummy_out_dir, f"{source_id}.{fmt}")
         if os.path.exists(dest):
             continue
-        os.replace(png_path, dest)
+        if fmt == "png":
+            os.replace(png_path, dest)
+        else:
+            Image.open(png_path).convert("RGB").save(dest, quality=JPEG_QUALITY)
+            os.remove(png_path)
         n_renamed += 1
     return n_renamed
 
@@ -224,17 +234,19 @@ def render_azulero_tile(iyjh: np.ndarray, wcs: WCS,
     out_dir: tile-level directory (already created by caller).
     Returns number of JPEGs written.
     """
+    fmt = AZULERO_FORMAT.lower()
     transform = azulero_render.build_transform()
     n_ok = 0
     n_fail = 0
     for src in sources:
-        out_path = os.path.join(out_dir, f"{src['source_id']}.jpg")
+        out_path = os.path.join(out_dir, f"{src['source_id']}.{fmt}")
         if os.path.exists(out_path):
             continue
         try:
             cutout = _extract_cutout(iyjh, wcs, src["ra"], src["dec"], CUTOUT_PIXELS)
             rgb = azulero_render.render_rgb_uint8(cutout, transform)
-            Image.fromarray(rgb).save(out_path, format="JPEG", quality=95)
+            save_kw = {"quality": JPEG_QUALITY} if fmt == "jpg" else {}
+            Image.fromarray(rgb).save(out_path, **save_kw)
             n_ok += 1
         except Exception:
             logging.exception("  azulero render failed for %s", src['source_id'])
@@ -278,12 +290,10 @@ def process_tile(args: tuple) -> tuple[int, int, int, int]:
     """
     tile_id, sources, azulero_out, eummy_out = args
 
-    # Skip tiles already processed (azulero dir exists = azulero pass ran; eummy
-    # outputs present = eummy pass ran).  Azulero render failures are data-driven
-    # and will just repeat, so don't require every JPG to exist.
+    # Check each pass independently so we can skip one without re-running the other.
     az_tile_dir = os.path.join(azulero_out, str(tile_id))
     az_done = os.path.isdir(az_tile_dir) and len(os.listdir(az_tile_dir)) > 0
-    em_done = all(os.path.exists(os.path.join(eummy_out, f"{s['source_id']}.png")) for s in sources)
+    em_done = all(os.path.exists(os.path.join(eummy_out, f"{s['source_id']}.{EUMMY_FORMAT.lower()}")) for s in sources)
     if az_done and em_done:
         return tile_id, 0, 0, 0
 
@@ -295,29 +305,29 @@ def process_tile(args: tuple) -> tuple[int, int, int, int]:
         return tile_id, 0, 0, len(sources)
 
     # ── Azulero pass ────────────────────────────────────────────────────────
-    az_tile_dir = os.path.join(azulero_out, str(tile_id))
-    os.makedirs(az_tile_dir, exist_ok=True)
-
-    handles = [fits.open(p, memmap=True) for p in iyjh_paths]
-    try:
-        iyjh = np.stack([h[0].data.astype(np.float32) for h in handles])
-        wcs  = WCS(handles[0][0].header)
-    finally:
-        for h in handles:
-            h.close()
-
-    n_azulero = render_azulero_tile(iyjh, wcs, sources, az_tile_dir)
-    del iyjh  # free memory before eummy
+    n_azulero = 0
+    if not az_done:
+        os.makedirs(az_tile_dir, exist_ok=True)
+        handles = [fits.open(p, memmap=True) for p in iyjh_paths]
+        try:
+            iyjh = np.stack([h[0].data.astype(np.float32) for h in handles])
+            wcs  = WCS(handles[0][0].header)
+        finally:
+            for h in handles:
+                h.close()
+        n_azulero = render_azulero_tile(iyjh, wcs, sources, az_tile_dir)
+        del iyjh
 
     # ── Eummy pass ──────────────────────────────────────────────────────────
-    em_tile_dir = os.path.join(eummy_out, f"_tile_ws_{tile_id}")
-    try:
-        n_eummy = run_eummy_tile(iyjh_paths, sources, em_tile_dir, eummy_out)
-    except subprocess.CalledProcessError:
-        logging.exception("Tile %s: eummy failed", tile_id)
-        n_eummy = 0
-    finally:
-        shutil.rmtree(em_tile_dir, ignore_errors=True)
+    n_eummy = 0
+    if not em_done:
+        em_tile_dir = os.path.join(eummy_out, f"_tile_ws_{tile_id}")
+        try:
+            n_eummy = run_eummy_tile(iyjh_paths, sources, em_tile_dir, eummy_out)
+        except subprocess.CalledProcessError:
+            logging.exception("Tile %s: eummy failed", tile_id)
+        finally:
+            shutil.rmtree(em_tile_dir, ignore_errors=True)
 
     return tile_id, n_azulero, n_eummy, 0
 
