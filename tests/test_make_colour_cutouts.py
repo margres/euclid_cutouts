@@ -227,3 +227,164 @@ def test_process_tile_skips_missing_fits(tmp_path, monkeypatch):
         ))
     tile_id, n_az, n_em, bulk_counts, n_skip = result
     assert n_az == 0 and n_em == 0 and n_skip == 1
+
+
+# ── _render_bulk_variant ─────────────────────────────────────────────────────
+
+def _random_cutout(size=32, seed=42):
+    """Return a (size, size) float32 array with realistic-ish flux values."""
+    rng = np.random.default_rng(seed)
+    return (rng.random((size, size), dtype=np.float32) * 100).clip(0.1)
+
+
+class TestRenderBulkVariant:
+
+    def test_gz_arcsinh_vis_y_shape_and_dtype(self):
+        vis, y = _random_cutout(seed=1), _random_cutout(seed=2)
+        rgb = m._render_bulk_variant("gz_arcsinh_vis_y", vis, y, None)
+        assert rgb.shape == (32, 32, 3)
+        assert rgb.dtype == np.uint8
+
+    def test_gz_arcsinh_vis_only_shape_and_dtype(self):
+        vis = _random_cutout()
+        rgb = m._render_bulk_variant("gz_arcsinh_vis_only", vis, None, None)
+        assert rgb.shape == (32, 32, 3)
+        assert rgb.dtype == np.uint8
+        # greyscale — all channels equal
+        assert np.array_equal(rgb[:, :, 0], rgb[:, :, 1])
+        assert np.array_equal(rgb[:, :, 1], rgb[:, :, 2])
+
+    def test_gz_arcsinh_triple_shape_and_dtype(self):
+        vis, y, j = _random_cutout(seed=1), _random_cutout(seed=2), _random_cutout(seed=3)
+        rgb = m._render_bulk_variant("gz_arcsinh_triple", vis, y, j)
+        assert rgb.shape == (32, 32, 3)
+        assert rgb.dtype == np.uint8
+
+    def test_sw_mtf_vis_only_shape_and_dtype(self):
+        vis = _random_cutout()
+        rgb = m._render_bulk_variant("sw_mtf_vis_only", vis, None, None)
+        assert rgb.shape == (32, 32, 3)
+        assert rgb.dtype == np.uint8
+        assert np.array_equal(rgb[:, :, 0], rgb[:, :, 1])
+
+    def test_sw_mtf_vis_y_shape_and_dtype(self):
+        vis, y = _random_cutout(seed=1), _random_cutout(seed=2)
+        rgb = m._render_bulk_variant("sw_mtf_vis_y", vis, y, None)
+        assert rgb.shape == (32, 32, 3)
+        assert rgb.dtype == np.uint8
+
+    def test_sw_mtf_vis_y_j_shape_and_dtype(self):
+        vis, y, j = _random_cutout(seed=1), _random_cutout(seed=2), _random_cutout(seed=3)
+        rgb = m._render_bulk_variant("sw_mtf_vis_y_j", vis, y, j)
+        assert rgb.shape == (32, 32, 3)
+        assert rgb.dtype == np.uint8
+
+    def test_unknown_variant_returns_none(self):
+        vis = _random_cutout()
+        assert m._render_bulk_variant("nonexistent_stretch", vis, None, None) is None
+
+    def test_does_not_mutate_input(self):
+        vis = _random_cutout(seed=1)
+        y = _random_cutout(seed=2)
+        vis_orig = vis.copy()
+        y_orig = y.copy()
+        m._render_bulk_variant("gz_arcsinh_vis_y", vis, y, None)
+        np.testing.assert_array_equal(vis, vis_orig)
+        np.testing.assert_array_equal(y, y_orig)
+
+
+# ── render_bulk_euclid_tile ──────────────────────────────────────────────────
+
+class TestRenderBulkEuclidTile:
+
+    def test_creates_files_for_each_variant(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(m, "NAMING", "id")
+        monkeypatch.setattr(m, "BULK_EUCLID_FORMAT", "jpg")
+        iyjh = _fake_iyjh()
+        wcs = _simple_wcs()
+        sources = [{"id": "s1", "ra": 33.9, "dec": -45.5, "size_pixel": 32}]
+
+        gz_dir = str(tmp_path / "gz")
+        sw_dir = str(tmp_path / "sw")
+        os.makedirs(gz_dir)
+        os.makedirs(sw_dir)
+        out_dirs = {"gz_arcsinh_vis_y": gz_dir, "sw_mtf_vis_y_j": sw_dir}
+
+        counts = m.render_bulk_euclid_tile(iyjh, wcs, sources, out_dirs)
+
+        assert counts["gz_arcsinh_vis_y"] == 1
+        assert counts["sw_mtf_vis_y_j"] == 1
+        assert os.path.exists(os.path.join(gz_dir, "s1.jpg"))
+        assert os.path.exists(os.path.join(sw_dir, "s1.jpg"))
+
+    def test_skips_existing_files(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(m, "NAMING", "id")
+        monkeypatch.setattr(m, "BULK_EUCLID_FORMAT", "jpg")
+        iyjh = _fake_iyjh()
+        wcs = _simple_wcs()
+        sources = [{"id": "s1", "ra": 33.9, "dec": -45.5, "size_pixel": 32}]
+
+        out_dir = str(tmp_path / "gz")
+        os.makedirs(out_dir)
+        out_dirs = {"gz_arcsinh_vis_y": out_dir}
+
+        # first run creates the file
+        m.render_bulk_euclid_tile(iyjh, wcs, sources, out_dirs)
+        # second run should skip
+        counts = m.render_bulk_euclid_tile(iyjh, wcs, sources, out_dirs)
+        assert counts["gz_arcsinh_vis_y"] == 0
+
+    def test_empty_out_dirs_returns_empty(self, monkeypatch):
+        monkeypatch.setattr(m, "NAMING", "id")
+        iyjh = _fake_iyjh()
+        wcs = _simple_wcs()
+        sources = [{"id": "s1", "ra": 33.9, "dec": -45.5, "size_pixel": 32}]
+        counts = m.render_bulk_euclid_tile(iyjh, wcs, sources, {})
+        assert counts == {}
+
+    def test_multiple_sources(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(m, "NAMING", "id")
+        monkeypatch.setattr(m, "BULK_EUCLID_FORMAT", "jpg")
+        iyjh = _fake_iyjh()
+        wcs = _simple_wcs()
+        sources = [
+            {"id": "a", "ra": 33.9, "dec": -45.5, "size_pixel": 32},
+            {"id": "b", "ra": 33.9, "dec": -45.5, "size_pixel": 32},
+            {"id": "c", "ra": 33.9, "dec": -45.5, "size_pixel": 32},
+        ]
+        out_dir = str(tmp_path / "mtf")
+        os.makedirs(out_dir)
+        counts = m.render_bulk_euclid_tile(iyjh, wcs, sources,
+                                           {"sw_mtf_vis_only": out_dir})
+        assert counts["sw_mtf_vis_only"] == 3
+        for name in ["a", "b", "c"]:
+            assert os.path.exists(os.path.join(out_dir, f"{name}.jpg"))
+
+    def test_png_format(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(m, "NAMING", "id")
+        monkeypatch.setattr(m, "BULK_EUCLID_FORMAT", "png")
+        iyjh = _fake_iyjh()
+        wcs = _simple_wcs()
+        sources = [{"id": "s1", "ra": 33.9, "dec": -45.5, "size_pixel": 32}]
+        out_dir = str(tmp_path / "gz")
+        os.makedirs(out_dir)
+        counts = m.render_bulk_euclid_tile(iyjh, wcs, sources,
+                                           {"gz_arcsinh_vis_only": out_dir})
+        assert counts["gz_arcsinh_vis_only"] == 1
+        assert os.path.exists(os.path.join(out_dir, "s1.png"))
+
+    def test_output_is_valid_image(self, tmp_path, monkeypatch):
+        """Saved file should be openable by PIL and have the right dimensions."""
+        monkeypatch.setattr(m, "NAMING", "id")
+        monkeypatch.setattr(m, "BULK_EUCLID_FORMAT", "jpg")
+        iyjh = _fake_iyjh()
+        wcs = _simple_wcs()
+        sources = [{"id": "s1", "ra": 33.9, "dec": -45.5, "size_pixel": 32}]
+        out_dir = str(tmp_path / "gz")
+        os.makedirs(out_dir)
+        m.render_bulk_euclid_tile(iyjh, wcs, sources,
+                                  {"gz_arcsinh_vis_y": out_dir})
+        from PIL import Image
+        img = Image.open(os.path.join(out_dir, "s1.jpg"))
+        assert img.size == (32, 32)
+        assert img.mode == "RGB"
