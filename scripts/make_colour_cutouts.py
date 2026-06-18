@@ -431,40 +431,49 @@ def render_bulk_euclid_tile(iyjh: np.ndarray, wcs: WCS,
 def _render_bulk_variant(variant: str, vis: np.ndarray,
                          y: np.ndarray | None,
                          j: np.ndarray | None) -> np.ndarray | None:
-    """Dispatch to the correct bulk_euclid rendering function."""
+    """Dispatch to the correct bulk_euclid rendering function.
+
+    bulk_euclid functions preserve FITS row order (origin = bottom-left),
+    so we flipud the result to put north up, matching azulero/eummy.
+    """
+    rgb = None
+
     if variant == "gz_arcsinh_vis_y":
-        return make_composite_cutout(vis.copy(), y.copy(), vis_q=100, nisp_q=0.2)
+        rgb = make_composite_cutout(vis.copy(), y.copy(), vis_q=100, nisp_q=0.2)
 
-    if variant == "gz_arcsinh_vis_only":
+    elif variant == "gz_arcsinh_vis_only":
         grey = make_vis_only_cutout(vis.copy(), q=100)
-        return np.stack([grey, grey, grey], axis=2)
+        rgb = np.stack([grey, grey, grey], axis=2)
 
-    if variant == "gz_arcsinh_triple":
-        return make_triple_cutout(vis.copy(), y.copy(), j.copy(),
-                                  short_q=100, mid_q=0.2, long_q=0.1)
+    elif variant == "gz_arcsinh_triple":
+        rgb = make_triple_cutout(vis.copy(), y.copy(), j.copy(),
+                                 short_q=100, mid_q=0.2, long_q=0.1)
 
-    if variant == "sw_mtf_vis_only":
+    elif variant == "sw_mtf_vis_only":
         vis_mtf = apply_MTF(vis.copy())
-        return np.stack([vis_mtf, vis_mtf, vis_mtf], axis=2)
+        rgb = np.stack([vis_mtf, vis_mtf, vis_mtf], axis=2)
 
-    if variant == "sw_mtf_vis_y":
+    elif variant == "sw_mtf_vis_y":
         vis_mtf = apply_MTF(vis.copy())
         y_mtf = apply_MTF(y.copy())
         mean_mtf = np.mean([vis_mtf, y_mtf], axis=0).astype(np.uint8)
         rgb = np.stack([y_mtf, mean_mtf, vis_mtf], axis=2)
-        return replace_luminosity_channel(rgb, rgb_channel_for_luminosity=2,
-                                          desaturate_speckles=False)
+        rgb = replace_luminosity_channel(rgb, rgb_channel_for_luminosity=2,
+                                         desaturate_speckles=False)
 
-    if variant == "sw_mtf_vis_y_j":
+    elif variant == "sw_mtf_vis_y_j":
         vis_mtf = apply_MTF(vis.copy())
         y_mtf = apply_MTF(y.copy())
         j_mtf = apply_MTF(j.copy())
         rgb = np.stack([j_mtf, y_mtf, vis_mtf], axis=2)
-        return replace_luminosity_channel(rgb, rgb_channel_for_luminosity=2,
-                                          desaturate_speckles=False)
+        rgb = replace_luminosity_channel(rgb, rgb_channel_for_luminosity=2,
+                                         desaturate_speckles=False)
 
-    logging.warning("Unknown bulk_euclid variant: %s", variant)
-    return None
+    else:
+        logging.warning("Unknown bulk_euclid variant: %s", variant)
+        return None
+
+    return np.flipud(rgb)
 
 
 def run_eummy_tile(iyjh_paths: list[str], sources: list[dict],
