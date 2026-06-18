@@ -157,21 +157,18 @@ to source IDs by RA/Dec proximity.
 - Output: PNG colour images (one per source, extracted from tile-level output)
 - Install: `pip install eummy`
 
-### bulk_euclid (GZ arcsinh + Space Warps MTF)
+### bulk_euclid (arcsinh + MTF)
 
 [bulk-euclid-cutouts](https://github.com/mwalmsley/bulk-euclid-cutouts)
-(Walmsley, M.) is the pipeline behind
-[Galaxy Zoo Euclid](https://www.esa.int/Science_Exploration/Space_Science/Euclid/Euclid_Galaxy_Zoo_help_us_classify_the_shapes_of_galaxies)
-and the Space Warps strong-lensing cutout campaigns. It provides two families
-of colour stretch:
+(Walmsley, M.) provides two families of colour stretch:
 
-- **GZ arcsinh** — the Galaxy Zoo rendering: per-band asinh dynamic-range
-  compression, VIS+NISP compositing, and optional low-surface-brightness
-  enhancement. Variants: `gz_arcsinh_vis_y` (VIS+Y), `gz_arcsinh_vis_only`,
+- **Arcsinh** — per-band asinh dynamic-range compression, VIS+NISP compositing,
+  and optional low-surface-brightness enhancement. Variants:
+  `gz_arcsinh_vis_y` (VIS+Y), `gz_arcsinh_vis_only`,
   `gz_arcsinh_triple` (VIS+Y+J).
-- **SW MTF** — the Space Warps midtone-transfer function (courtesy Tian Li):
-  automatic "curves"-style contrast adjustment via a midtone balance parameter,
-  with LAB-space luminosity replacement for multi-band composites. Variants:
+- **MTF** — midtone-transfer function (courtesy Tian Li): automatic
+  "curves"-style contrast adjustment via a midtone balance parameter, with
+  LAB-space luminosity replacement for multi-band composites. Variants:
   `sw_mtf_vis_only`, `sw_mtf_vis_y`, `sw_mtf_vis_y_j`.
 
 Select which variants to produce by editing the `BULK_EUCLID_OUTPUTS` list in
