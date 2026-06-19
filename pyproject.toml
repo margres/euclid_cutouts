@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "euclid-cutouts"
+version = "0.1.0"
+description = "Euclid multi-band colour cutout rendering (azulero, eummy, bulk_euclid)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    { name = "Margherita Grespan", email = "margherita.grespan@gmail.com" },
+]
+
+dependencies = [
+    "numpy",
+    "astropy",
+    "Pillow",
+]
+
+[project.optional-dependencies]
+all = [
+    "pandas",
+    "opencv-python",
+    "healpy",
+    "tqdm",
+]
+
+[tool.setuptools.packages.find]
+include = ["euclid_cutouts*"]

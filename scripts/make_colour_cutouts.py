@@ -118,6 +118,19 @@ VIS_ARCSEC_PER_PX     = 0.1   # VIS plate scale (arcsec per pixel)
 N_WORKERS             = 1
 PROGRESS_BAR          = False  # set True to show a tqdm progress bar (requires `pip install tqdm`)
 
+# ── FITS-input mode ────────────────────────────────────────────────────────
+# When INPUT_FITS_DIR is set to a directory path, the pipeline reads pre-made
+# FITS cutout files from that directory (instead of loading tile FITS and
+# extracting cutouts). Each file should be a multi-extension FITS with one
+# ImageHDU per band. The band order is specified by FITS_BAND_ORDER.
+# Eummy is not supported in this mode (it needs tile-level FITS).
+INPUT_FITS_DIR        = None   # e.g. "/media/user/euclid_cutouts/results/200k/cutouts"
+
+# Band order in the input FITS extensions. Maps extension index (CHANNEL_1,
+# CHANNEL_2, ...) to band identity. Use "VIS", "NIR_Y", "NIR_J", "NIR_H".
+# Missing bands (fewer extensions than 4) are zero-filled.
+FITS_BAND_ORDER       = ["VIS", "NIR_Y", "NIR_J", "NIR_H"]
+
 # Fallback release dirs — searched in order when a tile is not in TILE_CENTRES_CSV.
 # Q1 (R1 only):
 RELEASE_DIRS          = ["/media/home/data/euclid_q1/Q1_R1"]
@@ -476,6 +489,155 @@ def _render_bulk_variant(variant: str, vis: np.ndarray,
     return np.flipud(rgb)
 
 
+# ── FITS-input mode helpers ────────────────────────────────────────────────
+
+_IYJH_BAND_INDEX = {"VIS": 0, "NIR_Y": 1, "NIR_J": 2, "NIR_H": 3}
+
+
+def _load_fits_cutout(path: str) -> np.ndarray | None:
+    """Load a multi-extension FITS cutout into a (4, H, W) IYJH array.
+
+    Extensions are mapped to bands via FITS_BAND_ORDER. Missing bands are
+    zero-filled. Returns None if no usable image extensions found.
+    """
+    with fits.open(path) as hdul:
+        img_hdus = [h for h in hdul if h.data is not None and h.data.ndim == 2]
+        if not img_hdus:
+            return None
+
+        h, w = img_hdus[0].data.shape
+        iyjh = np.zeros((4, h, w), dtype=np.float32)
+
+        for i, hdu in enumerate(img_hdus):
+            if i >= len(FITS_BAND_ORDER):
+                break
+            band_name = FITS_BAND_ORDER[i]
+            idx = _IYJH_BAND_INDEX.get(band_name)
+            if idx is not None:
+                iyjh[idx] = hdu.data.astype(np.float32)
+
+    return iyjh
+
+
+def _render_single_fits(args: tuple) -> tuple[str, int, dict[str, int]]:
+    """Render colour images for a single FITS cutout file.
+
+    Returns (stem, n_azulero, {variant: count}).
+    """
+    fits_path, azulero_out, bulk_out_dirs = args
+
+    stem = os.path.splitext(os.path.basename(fits_path))[0]
+
+    iyjh = _load_fits_cutout(fits_path)
+    if iyjh is None:
+        logging.warning("No image data in %s — skipping", fits_path)
+        return stem, 0, {v: 0 for v in bulk_out_dirs}
+
+    az_fmt = AZULERO_FORMAT.lower()
+    be_fmt = BULK_EUCLID_FORMAT.lower()
+    n_azulero = 0
+    bulk_counts: dict[str, int] = {v: 0 for v in bulk_out_dirs}
+
+    if ENABLE_AZULERO:
+        out_path = os.path.join(azulero_out, f"{stem}.{az_fmt}")
+        if not os.path.exists(out_path):
+            try:
+                transform = azulero_render.build_transform()
+                rgb = azulero_render.render_rgb_uint8(iyjh, transform)
+                save_kw = {"quality": JPEG_QUALITY} if az_fmt == "jpg" else {}
+                Image.fromarray(rgb).save(out_path, **save_kw)
+                n_azulero = 1
+            except Exception:
+                logging.exception("  azulero failed for %s", stem)
+
+    if ENABLE_BULK_EUCLID and bulk_out_dirs:
+        import cv2
+        cv2.setNumThreads(1)
+        vis_im = iyjh[0]
+        y_im = iyjh[1]
+        j_im = iyjh[2]
+        for variant, out_dir in bulk_out_dirs.items():
+            out_path = os.path.join(out_dir, f"{stem}.{be_fmt}")
+            if os.path.exists(out_path):
+                continue
+            try:
+                rgb = _render_bulk_variant(variant, vis_im, y_im, j_im)
+                if rgb is None:
+                    continue
+                save_kw = {"quality": JPEG_QUALITY} if be_fmt == "jpg" else {}
+                Image.fromarray(rgb).save(out_path, **save_kw)
+                bulk_counts[variant] += 1
+            except Exception:
+                logging.exception("  bulk_euclid %s failed for %s", variant, stem)
+
+    return stem, n_azulero, bulk_counts
+
+
+def render_fits_dir():
+    """Colour-render pre-made FITS cutout files from INPUT_FITS_DIR."""
+    fits_files = sorted(glob.glob(os.path.join(INPUT_FITS_DIR, "*.fits")))
+    if not fits_files:
+        logging.error("No .fits files found in %s", INPUT_FITS_DIR)
+        return
+    logging.info("FITS-input mode: %d files in %s", len(fits_files), INPUT_FITS_DIR)
+
+    if ENABLE_EUMMY:
+        logging.warning("Eummy is not supported in FITS-input mode (needs tile-level FITS) — skipping")
+
+    azulero_out = os.path.join(OUTPUT_DIR, "azulero")
+    if ENABLE_AZULERO:
+        os.makedirs(azulero_out, exist_ok=True)
+
+    bulk_out_dirs: dict[str, str] = {}
+    if ENABLE_BULK_EUCLID:
+        for variant in BULK_EUCLID_OUTPUTS:
+            d = os.path.join(OUTPUT_DIR, variant)
+            os.makedirs(d, exist_ok=True)
+            bulk_out_dirs[variant] = d
+
+    active = []
+    if ENABLE_AZULERO:
+        active.append("azulero")
+    if bulk_out_dirs:
+        active.extend(BULK_EUCLID_OUTPUTS)
+    logging.info("Active renderers: %s", ", ".join(active))
+    logging.info("Band mapping: %s", " → ".join(
+        f"CHANNEL_{i+1}={b}" for i, b in enumerate(FITS_BAND_ORDER)))
+
+    work_items = [(fp, azulero_out, bulk_out_dirs) for fp in fits_files]
+
+    total_az = 0
+    total_bulk: dict[str, int] = {v: 0 for v in bulk_out_dirs}
+    done = 0
+    n_total = len(work_items)
+
+    with mp.Pool(N_WORKERS, initializer=_init_worker) as pool:
+        results_iter = pool.imap_unordered(_render_single_fits, work_items)
+        if PROGRESS_BAR:
+            from tqdm import tqdm
+            results_iter = tqdm(results_iter, total=n_total, unit="file",
+                                desc="Rendering FITS cutouts")
+        for stem, n_az, bc in results_iter:
+            total_az += n_az
+            for v, c in bc.items():
+                total_bulk[v] = total_bulk.get(v, 0) + c
+            done += 1
+            if PROGRESS_BAR:
+                bulk_str = "  ".join(f"{v}={total_bulk[v]}" for v in sorted(total_bulk))
+                results_iter.set_postfix_str(f"az={total_az} {bulk_str}")
+            elif done % 50 == 0 or done == n_total:
+                bulk_str = "  ".join(f"{v}={total_bulk[v]}" for v in sorted(total_bulk))
+                logging.info("[%d/%d files] azulero=%d  %s",
+                             done, n_total, total_az, bulk_str)
+
+    lines = [f"Done. {done} files processed"]
+    if ENABLE_AZULERO:
+        lines.append(f"  azulero={total_az} → {azulero_out}/")
+    for v, d in bulk_out_dirs.items():
+        lines.append(f"  {v}={total_bulk.get(v, 0)} → {d}/")
+    logging.info("\n".join(lines))
+
+
 def run_eummy_tile(iyjh_paths: list[str], sources: list[dict],
                    tile_dir: str, eummy_out_dir: str) -> int:
     """Run eummy for one tile and rename outputs to {id}.png. Returns count produced."""
@@ -568,6 +730,10 @@ def process_tile(args: tuple) -> tuple[int, int, int, dict[str, int], int]:
 
 
 def main():
+    if INPUT_FITS_DIR:
+        render_fits_dir()
+        return
+
     logging.info("Loading sources from %s", SOURCES_CSV)
     df = load_sources(SOURCES_CSV)
     logging.info("%d sources across %d tiles", len(df), df["tile_index"].nunique())

@@ -23,6 +23,22 @@ python scripts/make_colour_cutouts.py
 
 Output lands in `cutouts/azulero/` (JPEGs) and `cutouts/eummy/` (PNGs), flat.
 
+### FITS-input mode
+
+If you already have multi-band FITS cutout files (e.g. Cutana output), you can
+skip the tile-loading step and render colours directly:
+
+1. Set `INPUT_FITS_DIR` in the CONFIG block to your FITS directory.
+2. Set `FITS_BAND_ORDER` to match the band order in your files — e.g.
+   `["VIS", "NIR_Y", "NIR_J", "NIR_H"]` for 4-band or
+   `["NIR_Y", "NIR_J", "VIS"]` for 3-band Cutana output.
+3. Run normally — `python scripts/make_colour_cutouts.py`.
+
+Each `.fits` file is expected to have one ImageHDU per band (CHANNEL_1,
+CHANNEL_2, ...). The output filename stem is the input filename without the
+`.fits` extension. Eummy is not supported in this mode (it needs tile-level
+FITS).
+
 ## Input CSV columns
 
 Only RA and Dec are required. Everything else is optional — the pipeline

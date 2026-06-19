@@ -388,3 +388,194 @@ class TestRenderBulkEuclidTile:
         img = Image.open(os.path.join(out_dir, "s1.jpg"))
         assert img.size == (32, 32)
         assert img.mode == "RGB"
+
+
+# ── _load_fits_cutout ───────────────────────────────────────────────────────
+
+def _write_cutout_fits(path, bands, size=32):
+    """Write a multi-extension FITS cutout with len(bands) channels."""
+    primary = fits.PrimaryHDU()
+    hdus = [primary]
+    rng = np.random.default_rng(0)
+    for i, _ in enumerate(bands):
+        data = (rng.random((size, size), dtype=np.float32) * 100).clip(0.1)
+        hdu = fits.ImageHDU(data=data, name=f"CHANNEL_{i+1}")
+        hdus.append(hdu)
+    fits.HDUList(hdus).writeto(str(path), overwrite=True)
+
+
+class TestLoadFitsCutout:
+
+    def test_four_band_iyjh(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(m, "FITS_BAND_ORDER", ["VIS", "NIR_Y", "NIR_J", "NIR_H"])
+        p = tmp_path / "test.fits"
+        _write_cutout_fits(p, ["VIS", "NIR_Y", "NIR_J", "NIR_H"])
+        arr = m._load_fits_cutout(str(p))
+        assert arr.shape == (4, 32, 32)
+        assert arr.dtype == np.float32
+        assert arr[0].sum() > 0  # VIS
+        assert arr[1].sum() > 0  # NIR_Y
+        assert arr[2].sum() > 0  # NIR_J
+        assert arr[3].sum() > 0  # NIR_H
+
+    def test_three_band_cutana_order(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(m, "FITS_BAND_ORDER", ["NIR_Y", "NIR_J", "VIS"])
+        p = tmp_path / "test.fits"
+        _write_cutout_fits(p, ["NIR_Y", "NIR_J", "VIS"])
+        arr = m._load_fits_cutout(str(p))
+        assert arr.shape == (4, 32, 32)
+        assert arr[0].sum() > 0   # VIS mapped from CHANNEL_3
+        assert arr[1].sum() > 0   # NIR_Y mapped from CHANNEL_1
+        assert arr[2].sum() > 0   # NIR_J mapped from CHANNEL_2
+        assert arr[3].sum() == 0  # NIR_H absent — zero-filled
+
+    def test_single_band_vis_only(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(m, "FITS_BAND_ORDER", ["VIS"])
+        p = tmp_path / "test.fits"
+        _write_cutout_fits(p, ["VIS"])
+        arr = m._load_fits_cutout(str(p))
+        assert arr.shape == (4, 32, 32)
+        assert arr[0].sum() > 0   # VIS
+        assert arr[1].sum() == 0  # zero-filled
+        assert arr[2].sum() == 0
+        assert arr[3].sum() == 0
+
+    def test_empty_fits_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(m, "FITS_BAND_ORDER", ["VIS"])
+        p = tmp_path / "empty.fits"
+        fits.PrimaryHDU().writeto(str(p), overwrite=True)
+        assert m._load_fits_cutout(str(p)) is None
+
+
+# ── _render_single_fits ─────────────────────────────────────────────────────
+
+class TestRenderSingleFits:
+
+    def test_azulero_output(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(m, "FITS_BAND_ORDER", ["VIS", "NIR_Y", "NIR_J", "NIR_H"])
+        monkeypatch.setattr(m, "ENABLE_AZULERO", True)
+        monkeypatch.setattr(m, "ENABLE_BULK_EUCLID", False)
+        monkeypatch.setattr(m, "AZULERO_FORMAT", "jpg")
+
+        fits_dir = tmp_path / "fits"
+        fits_dir.mkdir()
+        az_dir = tmp_path / "azulero"
+        az_dir.mkdir()
+
+        p = fits_dir / "my_cutout.fits"
+        _write_cutout_fits(p, ["VIS", "NIR_Y", "NIR_J", "NIR_H"])
+
+        stem, n_az, bc = m._render_single_fits((str(p), str(az_dir), {}))
+        assert stem == "my_cutout"
+        assert n_az == 1
+        assert (az_dir / "my_cutout.jpg").exists()
+        from PIL import Image
+        img = Image.open(str(az_dir / "my_cutout.jpg"))
+        assert img.mode == "RGB"
+
+    def test_bulk_euclid_output(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(m, "FITS_BAND_ORDER", ["VIS", "NIR_Y", "NIR_J", "NIR_H"])
+        monkeypatch.setattr(m, "ENABLE_AZULERO", False)
+        monkeypatch.setattr(m, "ENABLE_BULK_EUCLID", True)
+        monkeypatch.setattr(m, "BULK_EUCLID_FORMAT", "jpg")
+
+        fits_dir = tmp_path / "fits"
+        fits_dir.mkdir()
+        gz_dir = tmp_path / "gz"
+        gz_dir.mkdir()
+
+        p = fits_dir / "src42.fits"
+        _write_cutout_fits(p, ["VIS", "NIR_Y", "NIR_J", "NIR_H"])
+
+        bulk_dirs = {"gz_arcsinh_vis_y": str(gz_dir)}
+        stem, n_az, bc = m._render_single_fits((str(p), str(tmp_path / "az"), bulk_dirs))
+        assert stem == "src42"
+        assert n_az == 0
+        assert bc["gz_arcsinh_vis_y"] == 1
+        assert (gz_dir / "src42.jpg").exists()
+
+    def test_skips_existing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(m, "FITS_BAND_ORDER", ["VIS", "NIR_Y", "NIR_J", "NIR_H"])
+        monkeypatch.setattr(m, "ENABLE_AZULERO", True)
+        monkeypatch.setattr(m, "ENABLE_BULK_EUCLID", False)
+        monkeypatch.setattr(m, "AZULERO_FORMAT", "jpg")
+
+        fits_dir = tmp_path / "fits"
+        fits_dir.mkdir()
+        az_dir = tmp_path / "azulero"
+        az_dir.mkdir()
+        (az_dir / "existing.jpg").write_bytes(b"\xff\xd8\xff")
+
+        p = fits_dir / "existing.fits"
+        _write_cutout_fits(p, ["VIS", "NIR_Y", "NIR_J", "NIR_H"])
+
+        stem, n_az, _ = m._render_single_fits((str(p), str(az_dir), {}))
+        assert n_az == 0
+
+    def test_empty_fits_skips(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(m, "FITS_BAND_ORDER", ["VIS"])
+        monkeypatch.setattr(m, "ENABLE_AZULERO", True)
+        monkeypatch.setattr(m, "ENABLE_BULK_EUCLID", False)
+
+        az_dir = tmp_path / "azulero"
+        az_dir.mkdir()
+
+        p = tmp_path / "empty.fits"
+        fits.PrimaryHDU().writeto(str(p), overwrite=True)
+
+        stem, n_az, bc = m._render_single_fits((str(p), str(az_dir), {}))
+        assert n_az == 0
+
+
+# ── render_fits_dir ─────────────────────────────────────────────────────────
+
+class TestRenderFitsDir:
+
+    def test_renders_all_files(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(m, "FITS_BAND_ORDER", ["VIS", "NIR_Y", "NIR_J", "NIR_H"])
+        monkeypatch.setattr(m, "ENABLE_AZULERO", True)
+        monkeypatch.setattr(m, "ENABLE_EUMMY", False)
+        monkeypatch.setattr(m, "ENABLE_BULK_EUCLID", True)
+        monkeypatch.setattr(m, "BULK_EUCLID_OUTPUTS", ["gz_arcsinh_vis_y"])
+        monkeypatch.setattr(m, "BULK_EUCLID_FORMAT", "jpg")
+        monkeypatch.setattr(m, "AZULERO_FORMAT", "jpg")
+        monkeypatch.setattr(m, "N_WORKERS", 1)
+        monkeypatch.setattr(m, "PROGRESS_BAR", False)
+
+        fits_dir = tmp_path / "fits_in"
+        fits_dir.mkdir()
+        out_dir = tmp_path / "cutouts"
+        monkeypatch.setattr(m, "INPUT_FITS_DIR", str(fits_dir))
+        monkeypatch.setattr(m, "OUTPUT_DIR", str(out_dir))
+
+        for name in ["src_a", "src_b"]:
+            _write_cutout_fits(fits_dir / f"{name}.fits",
+                               ["VIS", "NIR_Y", "NIR_J", "NIR_H"])
+
+        m.render_fits_dir()
+
+        assert (out_dir / "azulero" / "src_a.jpg").exists()
+        assert (out_dir / "azulero" / "src_b.jpg").exists()
+        assert (out_dir / "gz_arcsinh_vis_y" / "src_a.jpg").exists()
+        assert (out_dir / "gz_arcsinh_vis_y" / "src_b.jpg").exists()
+
+    def test_eummy_warning(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setattr(m, "FITS_BAND_ORDER", ["VIS"])
+        monkeypatch.setattr(m, "ENABLE_AZULERO", False)
+        monkeypatch.setattr(m, "ENABLE_EUMMY", True)
+        monkeypatch.setattr(m, "ENABLE_BULK_EUCLID", False)
+        monkeypatch.setattr(m, "N_WORKERS", 1)
+        monkeypatch.setattr(m, "PROGRESS_BAR", False)
+
+        fits_dir = tmp_path / "fits_in"
+        fits_dir.mkdir()
+        out_dir = tmp_path / "cutouts"
+        monkeypatch.setattr(m, "INPUT_FITS_DIR", str(fits_dir))
+        monkeypatch.setattr(m, "OUTPUT_DIR", str(out_dir))
+
+        _write_cutout_fits(fits_dir / "x.fits", ["VIS"])
+
+        import logging
+        with caplog.at_level(logging.WARNING):
+            m.render_fits_dir()
+        assert any("eummy" in r.message.lower() for r in caplog.records)
