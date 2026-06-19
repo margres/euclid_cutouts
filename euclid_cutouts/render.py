@@ -31,6 +31,7 @@ log = logging.getLogger(__name__)
 
 _azulero_render = None
 _bulk_funcs = None
+_stci_funcs = None
 
 
 def _ensure_azulero(cutana_root: str | None = None):
@@ -65,6 +66,18 @@ def _ensure_bulk(bulk_euclid_root: str | None = None):
     }
 
 
+def _ensure_stci():
+    global _stci_funcs
+    if _stci_funcs is not None:
+        return
+    from STCI import compose_pipeline, ComposeConfig, normalize_raw_channels_common
+    _stci_funcs = {
+        "compose_pipeline": compose_pipeline,
+        "ComposeConfig": ComposeConfig,
+        "normalize_raw_channels_common": normalize_raw_channels_common,
+    }
+
+
 # ── Band mapping ────────────────────────────────────────────────────────────
 
 IYJH_BAND_INDEX = {"VIS": 0, "NIR_Y": 1, "NIR_J": 2, "NIR_H": 3}
@@ -87,6 +100,31 @@ def render_azulero(
     _ensure_azulero(cutana_root)
     transform = _azulero_render.build_transform()
     return _azulero_render.render_rgb_uint8(iyjh, transform)
+
+
+def render_stci(
+    iyjh: np.ndarray,
+) -> np.ndarray:
+    """Render a (4, H, W) IYJH cutout to an (H, W, 3) uint8 RGB via STCI.
+
+    STCI (SpaceTelescopeColorImage, Tian Li) applies a PixInsight-like
+    pipeline: background neutralisation, colour calibration, linked
+    STF/histogram transformation, L-replacement, SCNR, and saturation.
+
+    Parameters
+    ----------
+    iyjh : (4, H, W) float32 array — VIS, NIR-Y, NIR-J, NIR-H.
+        Only VIS (index 0), NIR-Y (1), and NIR-J (2) are used.
+    """
+    _ensure_stci()
+    f = _stci_funcs
+    vis = iyjh[0].copy()
+    y_im = iyjh[1].copy()
+    j_im = iyjh[2].copy()
+    red, green, blue, _ = f["normalize_raw_channels_common"](j_im, y_im, vis)
+    outputs = f["compose_pipeline"](red, green, blue, config=f["ComposeConfig"]())
+    final = outputs["13_final.tif"]
+    return np.round(np.clip(np.flipud(final), 0.0, 1.0) * 255).astype(np.uint8)
 
 
 def render_bulk_variant(
@@ -169,10 +207,10 @@ def render_cutout(
     ----------
     iyjh : (4, H, W) float32 — VIS, NIR-Y, NIR-J, NIR-H.
     renderers : which renderers to apply.  Accepted values: ``"azulero"``,
-        ``"bulk_euclid"``.  Defaults to ``["azulero"]``.
+        ``"stci"``, ``"bulk_euclid"``.  Defaults to ``["azulero"]``.
     bulk_variants : which bulk_euclid variants to produce (ignored unless
         ``"bulk_euclid"`` is in *renderers*).  Defaults to
-        ``["gz_arcsinh_vis_y", "sw_mtf_vis_y_j"]``.
+        ``["gz_arcsinh_vis_y"]``.
     cutana_root : path to astronomaly-euclid.
     bulk_euclid_root : path to bulk-euclid-cutouts.
 
@@ -183,12 +221,15 @@ def render_cutout(
     if renderers is None:
         renderers = ["azulero"]
     if bulk_variants is None:
-        bulk_variants = ["gz_arcsinh_vis_y", "sw_mtf_vis_y_j"]
+        bulk_variants = ["gz_arcsinh_vis_y"]
 
     results: dict[str, np.ndarray] = {}
 
     if "azulero" in renderers:
         results["azulero"] = render_azulero(iyjh, cutana_root=cutana_root)
+
+    if "stci" in renderers:
+        results["stci"] = render_stci(iyjh)
 
     if "bulk_euclid" in renderers:
         vis = iyjh[0]
@@ -277,6 +318,16 @@ def _render_one_fits(fits_path: str) -> tuple[str, dict[str, int]]:
             except Exception:
                 log.exception("  azulero failed for %s", stem)
 
+    if cfg["enable_stci"]:
+        out_path = os.path.join(cfg["stci_out"], f"{stem}.{fmt}")
+        if not os.path.exists(out_path):
+            try:
+                rgb = render_stci(iyjh)
+                Image.fromarray(rgb).save(out_path, **save_kw)
+                counts["stci"] = 1
+            except Exception:
+                log.exception("  stci failed for %s", stem)
+
     if cfg["enable_bulk"]:
         try:
             import cv2
@@ -306,6 +357,7 @@ def render_fits_dir(
     output_dir: str = "cutouts",
     *,
     enable_azulero: bool = True,
+    enable_stci: bool = True,
     enable_bulk_euclid: bool = True,
     bulk_variants: list[str] | None = None,
     band_order: list[str] | None = None,
@@ -323,9 +375,10 @@ def render_fits_dir(
     input_dir : directory containing ``*.fits`` cutout files.
     output_dir : root output directory (subdirs are created per renderer).
     enable_azulero : produce azulero colour images.
+    enable_stci : produce STCI colour images.
     enable_bulk_euclid : produce bulk_euclid colour images.
     bulk_variants : which bulk_euclid variants.  Defaults to
-        ``["gz_arcsinh_vis_y", "sw_mtf_vis_y_j"]``.
+        ``["gz_arcsinh_vis_y"]``.
     band_order : maps FITS extension index to band.  Defaults to
         ``["VIS", "NIR_Y", "NIR_J", "NIR_H"]``.
     fmt : output image format (``"jpg"`` or ``"png"``).
@@ -340,7 +393,7 @@ def render_fits_dir(
     dict mapping renderer/variant name to total count produced.
     """
     if bulk_variants is None:
-        bulk_variants = ["gz_arcsinh_vis_y", "sw_mtf_vis_y_j"]
+        bulk_variants = ["gz_arcsinh_vis_y"]
     if band_order is None:
         band_order = ["VIS", "NIR_Y", "NIR_J", "NIR_H"]
 
@@ -354,6 +407,10 @@ def render_fits_dir(
     if enable_azulero:
         os.makedirs(azulero_out, exist_ok=True)
 
+    stci_out = os.path.join(output_dir, "stci")
+    if enable_stci:
+        os.makedirs(stci_out, exist_ok=True)
+
     bulk_out_dirs: dict[str, str] = {}
     if enable_bulk_euclid:
         for variant in bulk_variants:
@@ -364,6 +421,8 @@ def render_fits_dir(
     active = []
     if enable_azulero:
         active.append("azulero")
+    if enable_stci:
+        active.append("stci")
     if bulk_out_dirs:
         active.extend(bulk_variants)
     log.info("Active renderers: %s", ", ".join(active))
@@ -374,8 +433,10 @@ def render_fits_dir(
     _worker_cfg = {
         "band_order": band_order,
         "enable_azulero": enable_azulero,
+        "enable_stci": enable_stci,
         "enable_bulk": enable_bulk_euclid and bool(bulk_out_dirs),
         "azulero_out": azulero_out,
+        "stci_out": stci_out,
         "bulk_out_dirs": bulk_out_dirs,
         "fmt": fmt,
         "jpeg_quality": jpeg_quality,

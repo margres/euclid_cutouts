@@ -45,6 +45,7 @@ from bulk_euclid.utils.cutout_utils import (  # noqa: E402
 from bulk_euclid.utils.morphology_utils_ou_mer import (  # noqa: E402
     make_vis_only_cutout,
 )
+from STCI import compose_pipeline, ComposeConfig, normalize_raw_channels_common  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 
@@ -84,10 +85,12 @@ OUTPUT_DIR            = "cutouts"
 # Enable/disable each renderer independently.
 ENABLE_AZULERO        = True
 ENABLE_EUMMY          = True
+ENABLE_STCI           = True
 ENABLE_BULK_EUCLID    = True
 
 AZULERO_FORMAT        = "jpg"
 EUMMY_FORMAT          = "png"
+STCI_FORMAT           = "jpg"
 BULK_EUCLID_FORMAT    = "jpg"
 JPEG_QUALITY          = 95
 
@@ -102,7 +105,6 @@ JPEG_QUALITY          = 95
 #   "sw_mtf_vis_y_j"       — VIS+Y+J MTF (best for strong lensing)
 BULK_EUCLID_OUTPUTS   = [
     "gz_arcsinh_vis_y",
-    "sw_mtf_vis_y_j",
 ]
 
 # File naming convention for output cutouts.
@@ -396,6 +398,36 @@ def render_azulero_tile(iyjh: np.ndarray, wcs: WCS,
     return n_ok
 
 
+def render_stci_tile(iyjh: np.ndarray, wcs: WCS,
+                     sources: list[dict], out_dir: str) -> int:
+    """Render STCI images for all sources in one tile. Returns number written."""
+    fmt = STCI_FORMAT.lower()
+    config = ComposeConfig()
+    n_ok = n_fail = 0
+    for src in sources:
+        out_path = os.path.join(out_dir, f"{_make_stem(src)}.{fmt}")
+        if os.path.exists(out_path):
+            continue
+        try:
+            size = int(src.get("size_pixel", DEFAULT_CUTOUT_PIXELS))
+            cutout = _extract_cutout(iyjh, wcs, src["ra"], src["dec"], size)
+            vis, y_im, j_im = cutout[0], cutout[1], cutout[2]
+            red, green, blue, _ = normalize_raw_channels_common(j_im, y_im, vis)
+            outputs = compose_pipeline(red, green, blue, config=config)
+            final = outputs["13_final.tif"]
+            final_uint8 = np.round(np.clip(np.flipud(final), 0.0, 1.0) * 255).astype(np.uint8)
+            save_kw = {"quality": JPEG_QUALITY} if fmt == "jpg" else {}
+            Image.fromarray(final_uint8).save(out_path, **save_kw)
+            n_ok += 1
+        except Exception:
+            logging.exception("  STCI render failed for %s", src["id"])
+            n_fail += 1
+
+    if n_fail:
+        logging.warning("  %d STCI renders failed in %s", n_fail, out_dir)
+    return n_ok
+
+
 def render_bulk_euclid_tile(iyjh: np.ndarray, wcs: WCS,
                            sources: list[dict],
                            out_dirs: dict[str, str]) -> dict[str, int]:
@@ -665,9 +697,9 @@ def _init_worker():
     cv2.setNumThreads(1)
 
 
-def process_tile(args: tuple) -> tuple[int, int, int, dict[str, int], int]:
-    """Per-tile worker. Returns (tile_id, n_azulero, n_eummy, bulk_counts, n_skipped)."""
-    tile_id, sources, azulero_out, eummy_out, bulk_out_dirs = args
+def process_tile(args: tuple) -> tuple[int, int, int, int, dict[str, int], int]:
+    """Per-tile worker. Returns (tile_id, n_azulero, n_stci, n_eummy, bulk_counts, n_skipped)."""
+    tile_id, sources, azulero_out, stci_out, eummy_out, bulk_out_dirs = args
 
     # Skip tiles already fully processed.
     az_fmt = AZULERO_FORMAT.lower()
@@ -681,7 +713,7 @@ def process_tile(args: tuple) -> tuple[int, int, int, dict[str, int], int]:
         for d in bulk_out_dirs.values()
     ) if bulk_out_dirs else True
     if az_exists > 0 and em_exists == len(sources) and be_exists:
-        return tile_id, 0, 0, {v: 0 for v in bulk_out_dirs}, 0
+        return tile_id, 0, 0, 0, {v: 0 for v in bulk_out_dirs}, 0
 
     ra0  = sources[0]["ra"]
     dec0 = sources[0]["dec"]
@@ -691,7 +723,7 @@ def process_tile(args: tuple) -> tuple[int, int, int, dict[str, int], int]:
     if iyjh_paths is None:
         logging.warning("Tile %s: FITS not found — skipping %d sources",
                         tile_id, len(sources))
-        return tile_id, 0, 0, {v: 0 for v in bulk_out_dirs}, len(sources)
+        return tile_id, 0, 0, 0, {v: 0 for v in bulk_out_dirs}, len(sources)
 
     # ── Load tile data ──────────────────────────────────────────────────────
     handles = [fits.open(p, memmap=True) for p in iyjh_paths]
@@ -706,6 +738,11 @@ def process_tile(args: tuple) -> tuple[int, int, int, dict[str, int], int]:
     n_azulero = 0
     if ENABLE_AZULERO:
         n_azulero = render_azulero_tile(iyjh, wcs, sources, azulero_out)
+
+    # ── STCI pass ──────────────────────────────────────────────────────────
+    n_stci = 0
+    if ENABLE_STCI:
+        n_stci = render_stci_tile(iyjh, wcs, sources, stci_out)
 
     # ── bulk_euclid pass (GZ + SW) ──────────────────────────────────────────
     bulk_counts = {v: 0 for v in bulk_out_dirs}
@@ -726,7 +763,7 @@ def process_tile(args: tuple) -> tuple[int, int, int, dict[str, int], int]:
         finally:
             shutil.rmtree(em_tile_dir, ignore_errors=True)
 
-    return tile_id, n_azulero, n_eummy, bulk_counts, 0
+    return tile_id, n_azulero, n_stci, n_eummy, bulk_counts, 0
 
 
 def main():
@@ -739,9 +776,12 @@ def main():
     logging.info("%d sources across %d tiles", len(df), df["tile_index"].nunique())
 
     azulero_out = os.path.join(OUTPUT_DIR, "azulero")
+    stci_out    = os.path.join(OUTPUT_DIR, "stci")
     eummy_out   = os.path.join(OUTPUT_DIR, "eummy")
     if ENABLE_AZULERO:
         os.makedirs(azulero_out, exist_ok=True)
+    if ENABLE_STCI:
+        os.makedirs(stci_out, exist_ok=True)
     if ENABLE_EUMMY:
         os.makedirs(eummy_out, exist_ok=True)
 
@@ -755,6 +795,8 @@ def main():
     active = []
     if ENABLE_AZULERO:
         active.append("azulero")
+    if ENABLE_STCI:
+        active.append("stci")
     if ENABLE_EUMMY:
         active.append("eummy")
     if bulk_out_dirs:
@@ -766,13 +808,14 @@ def main():
          group[[c for c in ["id", "object_id", "tile_index", "ra", "dec", "size_pixel", "release_dir"]
                 if c in group.columns]].to_dict("records"),
          azulero_out,
+         stci_out,
          eummy_out,
          bulk_out_dirs)
         for tile_id, group in df.groupby("tile_index")
     ]
 
     n_tiles = len(work_items)
-    total_az = total_em = total_skip = done = 0
+    total_az = total_stci = total_em = total_skip = done = 0
     total_bulk: dict[str, int] = {v: 0 for v in bulk_out_dirs}
 
     with mp.Pool(N_WORKERS, initializer=_init_worker) as pool:
@@ -781,8 +824,9 @@ def main():
             from tqdm import tqdm
             results_iter = tqdm(results_iter, total=n_tiles, unit="tile",
                                 desc="Rendering cutouts")
-        for tile_id, n_az, n_em, bc, n_skip in results_iter:
+        for tile_id, n_az, n_st, n_em, bc, n_skip in results_iter:
             total_az   += n_az
+            total_stci += n_st
             total_em   += n_em
             total_skip += n_skip
             for v, c in bc.items():
@@ -791,15 +835,17 @@ def main():
             if PROGRESS_BAR:
                 bulk_str = "  ".join(f"{v}={total_bulk[v]}" for v in sorted(total_bulk))
                 results_iter.set_postfix_str(
-                    f"az={total_az} em={total_em} {bulk_str} skip={total_skip}")
+                    f"az={total_az} stci={total_stci} em={total_em} {bulk_str} skip={total_skip}")
             elif done % 50 == 0 or done == n_tiles:
                 bulk_str = "  ".join(f"{v}={total_bulk[v]}" for v in sorted(total_bulk))
-                logging.info("[%d/%d tiles] azulero=%d  eummy=%d  %s  skipped=%d",
-                             done, n_tiles, total_az, total_em, bulk_str, total_skip)
+                logging.info("[%d/%d tiles] azulero=%d  stci=%d  eummy=%d  %s  skipped=%d",
+                             done, n_tiles, total_az, total_stci, total_em, bulk_str, total_skip)
 
     lines = [f"Done. skipped={total_skip}"]
     if ENABLE_AZULERO:
         lines.append(f"  azulero={total_az} → {azulero_out}/")
+    if ENABLE_STCI:
+        lines.append(f"  stci={total_stci} → {stci_out}/")
     if ENABLE_EUMMY:
         lines.append(f"  eummy={total_em} → {eummy_out}/")
     for v, d in bulk_out_dirs.items():

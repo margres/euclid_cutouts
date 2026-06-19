@@ -222,11 +222,12 @@ def test_process_tile_skips_missing_fits(tmp_path, monkeypatch):
             [{"id": "s1", "ra": 33.9, "dec": -45.5,
               "size_pixel": 101, "release_dir": None}],
             str(tmp_path / "az"),
+            str(tmp_path / "stci"),
             str(tmp_path / "em"),
             {},
         ))
-    tile_id, n_az, n_em, bulk_counts, n_skip = result
-    assert n_az == 0 and n_em == 0 and n_skip == 1
+    tile_id, n_az, n_stci, n_em, bulk_counts, n_skip = result
+    assert n_az == 0 and n_stci == 0 and n_em == 0 and n_skip == 1
 
 
 # ── _render_bulk_variant ─────────────────────────────────────────────────────
