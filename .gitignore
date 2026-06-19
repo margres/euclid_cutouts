@@ -13,6 +13,11 @@ data/
 # Pipeline output
 results/
 cutouts/
+demo_output/
+demo_ml_output/
+
+# Packaging
+*.egg-info/
 
 # One-off benchmark / mosaic / batch scripts (kept locally, not in repo)
 scripts/benchmarks/
