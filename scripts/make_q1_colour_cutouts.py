@@ -26,15 +26,10 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from PIL import Image
 
-# Make cutana_datalabs and local scripts importable
-_CUTANA_ROOT = "/media/user/astronomaly-euclid"
-if _CUTANA_ROOT not in sys.path:
-    sys.path.insert(0, _CUTANA_ROOT)
-
 sys.path.insert(0, os.path.dirname(__file__))
 
 from fits_path_utils import find_fits_paths_any_release  # noqa: E402
-from cutana_datalabs import azulero_render  # noqa: E402
+from euclid_cutouts.render import build_azulero_transform, _render_azulero_rgb  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -58,7 +53,7 @@ N_WORKERS        = 1
 
 # Output image format: "jpg" (lossy, ~20 KB/cutout) or "png" (lossless, ~60 KB/cutout)
 AZULERO_FORMAT   = "jpg"
-EUMMY_FORMAT     = "jpg"
+EUMMY_FORMAT     = "png"
 JPEG_QUALITY     = 99
 
 # Release dirs, tried in order — first complete set of FITS wins (put R2 before R1).
@@ -67,7 +62,7 @@ RELEASE_DIRS     = ["/media/home/data/euclid_q1/Q1_R1"]
 # DR1 (R2 first, fall back to R1):
 # RELEASE_DIRS   = ["/media/home/data/euclid_idr1/DR1/R2", "/media/home/data/euclid_idr1/DR1/R1"]
 
-BANDS_3          = ["VIS", "NIR_Y", "NIR_J"]   # NIR_H derived by azulero_render.find_iyjh_paths
+BANDS_3          = ["VIS", "NIR_Y", "NIR_J"]   # NIR_H derived by resolve_iyjh_paths
 BAND_TO_INST     = {"VIS": "VIS", "NIR_Y": "NISP", "NIR_J": "NISP"}
 # ── END CONFIG ────────────────────────────────────────────────────────────────
 
@@ -113,16 +108,27 @@ def load_sources(parquet_path: str, coords_csv: str) -> pd.DataFrame:
 def resolve_iyjh_paths(tile_id: int, ra: float, dec: float) -> list[str] | None:
     """Resolve 4 IYJH FITS paths for tile_id from Q1_RELEASE_DIRS.
 
-    Uses find_fits_paths_any_release for VIS/NIR_Y/NIR_J, then
-    azulero_render.find_iyjh_paths to glob NIR_H.
-    Returns None if any band is missing.
+    Uses find_fits_paths_any_release for VIS/NIR_Y/NIR_J, then globs
+    the NISP directory for NIR_H.
+    Returns [VIS, Y, J, H] or None if any band is missing.
     """
     paths_3 = find_fits_paths_any_release(
         tile_id, BANDS_3, RELEASE_DIRS, BAND_TO_INST, ra=ra, dec=dec
     )
     if paths_3 is None:
         return None
-    return azulero_render.find_iyjh_paths(paths_3)
+    # Glob NIR-H from the same NISP directory as NIR-J
+    nisp_path = paths_3[2]  # NIR_J path
+    match = re.search(r"-(NIR-[YJ])_(TILE\d+)-", nisp_path)
+    if match is None:
+        return None
+    pattern = nisp_path.replace(f"-{match.group(1)}_{match.group(2)}-",
+                                 f"-NIR-H_{match.group(2)}-")
+    pattern = re.sub(r"-[0-9A-F]+_\d{8}T\d{6}\.\d+Z_", "-*_*Z_", pattern)
+    h_matches = glob.glob(pattern)
+    if not h_matches:
+        return None
+    return paths_3 + [sorted(h_matches)[-1]]
 
 
 def _extract_cutout(iyjh: np.ndarray, wcs: WCS, ra: float, dec: float, size: int) -> np.ndarray:
@@ -235,7 +241,7 @@ def render_azulero_tile(iyjh: np.ndarray, wcs: WCS,
     Returns number of JPEGs written.
     """
     fmt = AZULERO_FORMAT.lower()
-    transform = azulero_render.build_transform()
+    transform = build_azulero_transform()
     n_ok = 0
     n_fail = 0
     for src in sources:
@@ -244,7 +250,8 @@ def render_azulero_tile(iyjh: np.ndarray, wcs: WCS,
             continue
         try:
             cutout = _extract_cutout(iyjh, wcs, src["ra"], src["dec"], CUTOUT_PIXELS)
-            rgb = azulero_render.render_rgb_uint8(cutout, transform)
+            rgb_f = _render_azulero_rgb(cutout, transform)
+            rgb = (np.clip(rgb_f, 0.0, 1.0) * 255).round().astype(np.uint8)
             save_kw = {"quality": JPEG_QUALITY} if fmt == "jpg" else {}
             Image.fromarray(rgb).save(out_path, **save_kw)
             n_ok += 1
@@ -292,7 +299,7 @@ def process_tile(args: tuple) -> tuple[int, int, int, int]:
 
     # Check each pass independently so we can skip one without re-running the other.
     az_tile_dir = os.path.join(azulero_out, str(tile_id))
-    az_done = os.path.isdir(az_tile_dir) and len(os.listdir(az_tile_dir)) > 0
+    az_done = True  # azulero already zipped — skip re-rendering
     em_done = all(os.path.exists(os.path.join(eummy_out, f"{s['source_id']}.{EUMMY_FORMAT.lower()}")) for s in sources)
     if az_done and em_done:
         return tile_id, 0, 0, 0

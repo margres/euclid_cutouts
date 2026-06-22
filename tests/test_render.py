@@ -15,7 +15,6 @@ from euclid_cutouts.render import (
     IYJH_BAND_INDEX,
 )
 
-CUTANA_ROOT = "/media/user/astronomaly-euclid"
 BULK_ROOT = "/media/user/bulk-euclid-cutouts"
 
 
@@ -65,7 +64,7 @@ class TestRenderAzulero:
 
     def test_shape_and_dtype(self):
         iyjh = _fake_iyjh()
-        rgb = render_azulero(iyjh, cutana_root=CUTANA_ROOT)
+        rgb = render_azulero(iyjh)
         assert rgb.shape == (32, 32, 3)
         assert rgb.dtype == np.uint8
 
@@ -103,7 +102,7 @@ class TestRenderCutout:
 
     def test_azulero_only(self):
         iyjh = _fake_iyjh()
-        out = render_cutout(iyjh, renderers=["azulero"], cutana_root=CUTANA_ROOT)
+        out = render_cutout(iyjh, renderers=["azulero"])
         assert "azulero" in out
         assert out["azulero"].shape == (32, 32, 3)
 
@@ -120,7 +119,6 @@ class TestRenderCutout:
         out = render_cutout(iyjh,
                             renderers=["azulero", "bulk_euclid"],
                             bulk_variants=["sw_mtf_vis_y_j"],
-                            cutana_root=CUTANA_ROOT,
                             bulk_euclid_root=BULK_ROOT)
         assert "azulero" in out
         assert "sw_mtf_vis_y_j" in out
@@ -146,7 +144,6 @@ class TestRenderFitsDir:
             bulk_variants=["gz_arcsinh_vis_y"],
             fmt="jpg",
             n_workers=1,
-            cutana_root=CUTANA_ROOT,
             bulk_euclid_root=BULK_ROOT,
         )
 

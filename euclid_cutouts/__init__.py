@@ -5,6 +5,7 @@ from euclid_cutouts.render import (
     render_cutout,
     render_fits_dir,
     load_fits_cutout,
+    build_azulero_transform,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "render_cutout",
     "render_fits_dir",
     "load_fits_cutout",
+    "build_azulero_transform",
 ]

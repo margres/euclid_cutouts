@@ -147,18 +147,18 @@ same per-tile FITS stacks that Cutana resolves.
 
 ### azulero
 
-[azulero](https://doi.org/10.24400/815952/Azulero) (Basset et al.) is CNES's
-colour-rendering package for Euclid tiles. It combines the four MER stack bands
-(VIS, NIR-Y, NIR-J, NIR-H) into an LRGB composite using an asinh stretch,
-per-band sharpening, dead-pixel inpainting, and configurable hue/saturation
-mapping. This pipeline uses azulero's Python API (`azulero.image.color`,
-`azulero.image.mask`) through the `azulero_render` wrapper in
+[azulero](https://kabasset.github.io/azulero/v2.0.0/index.html) (Basset et al.)
+is CNES's colour-rendering package for Euclid tiles. It combines the four MER
+stack bands (VIS, NIR-Y, NIR-J, NIR-H) into an LRGB composite using an asinh
+stretch, per-band sharpening, dead-pixel inpainting, and configurable
+hue/saturation mapping. This pipeline uses azulero's Python API
+(`azulero.image.color`, `azulero.image.mask`) through the `render` module in
 `astronomaly-euclid/cutana_datalabs/`, which renders individual cutouts
 in-memory rather than processing whole tiles via the `azul process` CLI.
 
 - Input: 4-band IYJH (VIS, NIR-Y, NIR-J, NIR-H) cutout arrays
 - Output: JPEG colour images (one per source)
-- Install: `pip install azulero`
+- Install: `pip install azulero` (requires v2.0+)
 
 ### eummy
 
@@ -206,7 +206,7 @@ the CONFIG block.
 - `healpy` (for tile lookup when `tile_index` is absent from the CSV)
 - `cutana` (`pip install cutana`)
 
-The `azulero_render` module is imported from
+The `render` module is imported from
 `astronomaly-euclid/cutana_datalabs/`; make sure that repo is available and
 its path is set in the `_CUTANA_ROOT` variable at the top of
 `make_colour_cutouts.py`. The `bulk_euclid` package is imported from

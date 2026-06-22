@@ -24,18 +24,14 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from PIL import Image
 
-_CUTANA_ROOT = "/media/user/astronomaly-euclid"
-if _CUTANA_ROOT not in sys.path:
-    sys.path.insert(0, _CUTANA_ROOT)
-
 _BULK_EUCLID_ROOT = "/media/user/bulk-euclid-cutouts"
 if _BULK_EUCLID_ROOT not in sys.path:
     sys.path.insert(0, _BULK_EUCLID_ROOT)
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from fits_path_utils import find_fits_paths_any_release, find_fits_paths  # noqa: E402
-from cutana_datalabs import azulero_render  # noqa: E402
+from fits_path_utils import find_fits_paths_any_release, find_fits_paths, find_iyjh_paths  # noqa: E402
+from euclid_cutouts.render import build_azulero_transform, _render_azulero_rgb  # noqa: E402
 from bulk_euclid.utils.cutout_utils import (  # noqa: E402
     make_composite_cutout,
     make_triple_cutout,
@@ -140,7 +136,7 @@ RELEASE_DIRS          = ["/media/home/data/euclid_q1/Q1_R1"]
 # RELEASE_DIRS        = ["/media/home/data/euclid_idr1/DR1/R2",
 #                        "/media/home/data/euclid_idr1/DR1/R1"]
 
-BANDS_3               = ["VIS", "NIR_Y", "NIR_J"]  # NIR_H derived by azulero_render.find_iyjh_paths
+BANDS_3               = ["VIS", "NIR_Y", "NIR_J"]  # NIR_H derived by find_iyjh_paths
 BAND_TO_INST          = {"VIS": "VIS", "NIR_Y": "NISP", "NIR_J": "NISP"}
 # ── END CONFIG ────────────────────────────────────────────────────────────────
 
@@ -282,7 +278,7 @@ def resolve_iyjh_paths(tile_id: int, ra: float, dec: float,
     )
     if paths_3 is None:
         return None
-    return azulero_render.find_iyjh_paths(paths_3)
+    return find_iyjh_paths(paths_3)
 
 
 def _extract_cutout(iyjh: np.ndarray, wcs: WCS,
@@ -376,7 +372,7 @@ def render_azulero_tile(iyjh: np.ndarray, wcs: WCS,
                         sources: list[dict], out_dir: str) -> int:
     """Render azulero images for all sources in one tile. Returns number written."""
     fmt = AZULERO_FORMAT.lower()
-    transform = azulero_render.build_transform()
+    transform = build_azulero_transform()
     n_ok = n_fail = 0
     for src in sources:
         out_path = os.path.join(out_dir, f"{_make_stem(src)}.{fmt}")
@@ -385,7 +381,8 @@ def render_azulero_tile(iyjh: np.ndarray, wcs: WCS,
         try:
             size   = int(src.get("size_pixel", DEFAULT_CUTOUT_PIXELS))
             cutout = _extract_cutout(iyjh, wcs, src["ra"], src["dec"], size)
-            rgb    = azulero_render.render_rgb_uint8(cutout, transform)
+            rgb_f  = _render_azulero_rgb(cutout, transform)
+            rgb    = (np.clip(rgb_f, 0.0, 1.0) * 255).round().astype(np.uint8)
             save_kw = {"quality": JPEG_QUALITY} if fmt == "jpg" else {}
             Image.fromarray(rgb).save(out_path, **save_kw)
             n_ok += 1
@@ -574,8 +571,9 @@ def _render_single_fits(args: tuple) -> tuple[str, int, dict[str, int]]:
         out_path = os.path.join(azulero_out, f"{stem}.{az_fmt}")
         if not os.path.exists(out_path):
             try:
-                transform = azulero_render.build_transform()
-                rgb = azulero_render.render_rgb_uint8(iyjh, transform)
+                transform = build_azulero_transform()
+                rgb_f = _render_azulero_rgb(iyjh, transform)
+                rgb = (np.clip(rgb_f, 0.0, 1.0) * 255).round().astype(np.uint8)
                 save_kw = {"quality": JPEG_QUALITY} if az_fmt == "jpg" else {}
                 Image.fromarray(rgb).save(out_path, **save_kw)
                 n_azulero = 1

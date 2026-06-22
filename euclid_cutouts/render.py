@@ -15,6 +15,7 @@ import glob
 import logging
 import multiprocessing as mp
 import os
+import re
 import sys
 from typing import Literal
 
@@ -25,23 +26,19 @@ from PIL import Image
 log = logging.getLogger(__name__)
 
 # ── Lazy optional imports ───────────────────────────────────────────────────
-# azulero_render lives inside astronomaly-euclid and is not always on sys.path.
-# bulk_euclid may or may not be installed. We import lazily so the package
-# itself is pip-installable without either dependency present.
+# azulero, STCI, and bulk_euclid are optional — import lazily so the package
+# is pip-installable without all renderers present.
 
-_azulero_render = None
+try:
+    from azulero.image import color as _az_color, mask as _az_mask
+    _AZULERO_AVAILABLE = True
+except ImportError:
+    _az_color = None
+    _az_mask = None
+    _AZULERO_AVAILABLE = False
+
 _bulk_funcs = None
 _stci_funcs = None
-
-
-def _ensure_azulero(cutana_root: str | None = None):
-    global _azulero_render
-    if _azulero_render is not None:
-        return
-    if cutana_root and cutana_root not in sys.path:
-        sys.path.insert(0, cutana_root)
-    from cutana_datalabs import azulero_render as _mod
-    _azulero_render = _mod
 
 
 def _ensure_bulk(bulk_euclid_root: str | None = None):
@@ -78,6 +75,64 @@ def _ensure_stci():
     }
 
 
+# ── Azulero 2.0 defaults ─────────────────────────────────────────────────────
+
+AZUL_ZERO       = [24.5, 29.8, 30.1, 30.0]
+AZUL_SCALING    = [2.2, 1.3, 1.2, 1.0]
+AZUL_FWHM       = [1.6, 3.5, 3.4, 3.5]
+AZUL_SHARPEN    = 0.5
+AZUL_NIRL       = 0.1
+AZUL_IB         = 1.0
+AZUL_YG         = 0.5
+AZUL_JR         = 0.25
+AZUL_WHITE      = 22.5
+AZUL_STRETCH    = 27.5
+AZUL_OFFSET     = 28.5
+AZUL_HUE        = -20
+AZUL_SATURATION = 1.2
+
+
+def build_azulero_transform(hue=AZUL_HUE, saturation=AZUL_SATURATION,
+                            stretch=AZUL_STRETCH, white=AZUL_WHITE,
+                            offset=AZUL_OFFSET, sharpen=AZUL_SHARPEN):
+    """Build an azulero colour Transform with v2.0 defaults."""
+    if not _AZULERO_AVAILABLE:
+        raise ImportError("azulero.image is not installed; pip install azulero")
+    return _az_color.Transform(
+        iyjh_zero_points=np.array(AZUL_ZERO, dtype=np.float64),
+        iyjh_scaling=np.array(AZUL_SCALING, dtype=np.float64),
+        iyjh_fwhm=np.array(AZUL_FWHM, dtype=np.float64),
+        sharpen_strength=sharpen,
+        nir_to_l=AZUL_NIRL,
+        i_to_b=AZUL_IB,
+        y_to_g=AZUL_YG,
+        j_to_r=AZUL_JR,
+        hue=hue,
+        saturation=saturation,
+        stretch=stretch,
+        bw=np.array([offset, white], dtype=np.float64),
+        curves=[],
+    )
+
+
+def _render_azulero_rgb(iyjh: np.ndarray, transform) -> np.ndarray:
+    """Full azulero pipeline: inpaint, sharpen, stretch, blend → (H,W,3) float32 RGB."""
+    if not _AZULERO_AVAILABLE:
+        raise ImportError("azulero.image is not installed; pip install azulero")
+    iyjh = iyjh.copy()
+    dead = _az_mask.dead_pixels(iyjh)
+    iyjh[0] = _az_mask.inpaint(iyjh[0], dead[0])
+    nir_dead = dead[1] | dead[2] | dead[3]
+    iyjh[1:] = _az_mask.inpaint(iyjh[1:], nir_dead, 0)
+    iyjh = _az_color.sharpen(iyjh, transform.iyjh_fwhm / 2.355, transform.sharpen_strength)
+    iyjh = _az_color.stretch_iyjh(iyjh, transform)
+    lbgr = _az_color.iyjh_to_lbgr(iyjh, transform)
+    bgr = _az_color.lbgr_to_bgr(lbgr, transform)
+    bgr[dead[0]] = _az_mask.resaturate(bgr[dead[0]])
+    rgb = bgr[..., ::-1]
+    return np.flipud(np.clip(rgb, 0.0, 1.0).astype(np.float32))
+
+
 # ── Band mapping ────────────────────────────────────────────────────────────
 
 IYJH_BAND_INDEX = {"VIS": 0, "NIR_Y": 1, "NIR_J": 2, "NIR_H": 3}
@@ -87,19 +142,16 @@ IYJH_BAND_INDEX = {"VIS": 0, "NIR_Y": 1, "NIR_J": 2, "NIR_H": 3}
 
 def render_azulero(
     iyjh: np.ndarray,
-    *,
-    cutana_root: str | None = None,
 ) -> np.ndarray:
     """Render a (4, H, W) IYJH cutout to an (H, W, 3) uint8 RGB via azulero.
 
     Parameters
     ----------
     iyjh : (4, H, W) float32 array — VIS, NIR-Y, NIR-J, NIR-H.
-    cutana_root : path to astronomaly-euclid (added to sys.path if needed).
     """
-    _ensure_azulero(cutana_root)
-    transform = _azulero_render.build_transform()
-    return _azulero_render.render_rgb_uint8(iyjh, transform)
+    transform = build_azulero_transform()
+    rgb = _render_azulero_rgb(iyjh, transform)
+    return (np.clip(rgb, 0.0, 1.0) * 255).round().astype(np.uint8)
 
 
 def render_stci(
@@ -198,7 +250,6 @@ def render_cutout(
     *,
     renderers: list[str] | None = None,
     bulk_variants: list[str] | None = None,
-    cutana_root: str | None = None,
     bulk_euclid_root: str | None = None,
 ) -> dict[str, np.ndarray]:
     """Render a single (4, H, W) IYJH cutout through one or more colour stretches.
@@ -211,7 +262,6 @@ def render_cutout(
     bulk_variants : which bulk_euclid variants to produce (ignored unless
         ``"bulk_euclid"`` is in *renderers*).  Defaults to
         ``["gz_arcsinh_vis_y"]``.
-    cutana_root : path to astronomaly-euclid.
     bulk_euclid_root : path to bulk-euclid-cutouts.
 
     Returns
@@ -226,7 +276,7 @@ def render_cutout(
     results: dict[str, np.ndarray] = {}
 
     if "azulero" in renderers:
-        results["azulero"] = render_azulero(iyjh, cutana_root=cutana_root)
+        results["azulero"] = render_azulero(iyjh)
 
     if "stci" in renderers:
         results["stci"] = render_stci(iyjh)
@@ -312,7 +362,7 @@ def _render_one_fits(fits_path: str) -> tuple[str, dict[str, int]]:
         out_path = os.path.join(cfg["azulero_out"], f"{stem}.{fmt}")
         if not os.path.exists(out_path):
             try:
-                rgb = render_azulero(iyjh, cutana_root=cfg["cutana_root"])
+                rgb = render_azulero(iyjh)
                 Image.fromarray(rgb).save(out_path, **save_kw)
                 counts["azulero"] = 1
             except Exception:
@@ -365,7 +415,6 @@ def render_fits_dir(
     jpeg_quality: int = 95,
     n_workers: int = 1,
     progress_bar: bool = False,
-    cutana_root: str | None = None,
     bulk_euclid_root: str | None = None,
 ) -> dict[str, int]:
     """Colour-render a directory of FITS cutout files.
@@ -385,7 +434,6 @@ def render_fits_dir(
     jpeg_quality : JPEG quality (1–100).
     n_workers : number of parallel workers.
     progress_bar : show a tqdm progress bar.
-    cutana_root : path to astronomaly-euclid (for azulero).
     bulk_euclid_root : path to bulk-euclid-cutouts.
 
     Returns
@@ -440,7 +488,6 @@ def render_fits_dir(
         "bulk_out_dirs": bulk_out_dirs,
         "fmt": fmt,
         "jpeg_quality": jpeg_quality,
-        "cutana_root": cutana_root,
         "bulk_euclid_root": bulk_euclid_root,
     }
 

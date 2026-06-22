@@ -7,10 +7,13 @@ Centralizes BGSUB-MOSAIC file lookup and coverage-aware selection between
 multiple reprocessing runs of the same tile/band.
 """
 
+import ast
 import glob
+import json
 import logging
 import re
 
+import pandas as pd
 from astropy.io import fits
 from astropy.wcs import WCS
 
@@ -90,3 +93,80 @@ def find_fits_paths_any_release(tile_index: int, bands: list[str], release_dirs:
             return paths
     logging.warning(f"  No complete set of {bands} files for tile {tile_index} in any release dir")
     return None
+
+
+def resolve_paths_by_tile(df: pd.DataFrame, bands: list[str], release_dirs: list[str],
+                          band_to_instrument: dict[str, str],
+                          tile_col: str = "tile_index") -> pd.DataFrame:
+    """Add a ``fits_file_paths`` column by resolving FITS paths once per unique tile.
+
+    Rows whose tile has no complete band set are dropped.
+
+    Parameters
+    ----------
+    df : DataFrame with at least *tile_col*.
+    bands : band names to resolve (e.g. ``["VIS", "NIR_Y", "NIR_J"]``).
+    release_dirs : release directories to try in order.
+    band_to_instrument : maps band name to instrument (``"VIS"`` or ``"NISP"``).
+    tile_col : column containing the tile index.
+    """
+    logging.info("Resolving FITS paths once per unique tile")
+    unique_tiles = df[tile_col].dropna().astype(int).unique()
+    logging.info("Found %d unique tiles", len(unique_tiles))
+
+    tile_to_paths: dict[int, str | None] = {}
+    missing = 0
+    for tile_index in unique_tiles:
+        paths = find_fits_paths_any_release(
+            int(tile_index), bands, release_dirs, band_to_instrument)
+        if paths is None:
+            tile_to_paths[int(tile_index)] = None
+            missing += 1
+        else:
+            tile_to_paths[int(tile_index)] = json.dumps(paths)
+
+    logging.info("%d tiles missing FITS files", missing)
+
+    df = df.copy()
+    df["fits_file_paths"] = df[tile_col].astype(int).map(tile_to_paths)
+    n_dropped = df["fits_file_paths"].isna().sum()
+    df = df.dropna(subset=["fits_file_paths"])
+    logging.info("%d sources dropped (missing tiles). %d sources remain.",
+                 n_dropped, len(df))
+    return df
+
+
+def find_iyjh_paths(fits_file_paths):
+    """Given a 3-band fits_file_paths entry (VIS/NIR-Y/NIR-J), return 4
+    IYJH paths [VIS, NIR-Y, NIR-J, NIR-H], deriving the missing NIR-H by
+    globbing the same NISP tile directory. Returns None if NIR-H can't be
+    found."""
+    if isinstance(fits_file_paths, str):
+        fits_file_paths = ast.literal_eval(fits_file_paths)
+
+    _BAND_TAGS = ["VIS", "NIR-Y", "NIR-J", "NIR-H"]
+    band_path = {}
+    for path in fits_file_paths:
+        for band in _BAND_TAGS:
+            if f"-{band}_TILE" in path:
+                band_path[band] = path
+                break
+
+    if "NIR-H" not in band_path:
+        nisp_path = band_path.get("NIR-J") or band_path.get("NIR-Y")
+        if nisp_path is None:
+            return None
+        match = re.search(r"-(NIR-[YJ])_(TILE\\d+)-", nisp_path)
+        if match is None:
+            return None
+        pattern = nisp_path.replace(f"-{match.group(1)}_{match.group(2)}-",
+                                     f"-NIR-H_{match.group(2)}-")
+        pattern = re.sub(r"-[0-9A-F]+_\\d{8}T\\d{6}\\.\\d+Z_", "-*_*Z_", pattern)
+        matches = glob.glob(pattern)
+        if not matches:
+            return None
+        band_path["NIR-H"] = sorted(matches)[-1]
+
+    if not all(band in band_path for band in _BAND_TAGS):
+        return None
+    return [band_path[band] for band in _BAND_TAGS]
