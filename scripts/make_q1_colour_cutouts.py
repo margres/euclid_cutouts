@@ -53,7 +53,7 @@ N_WORKERS        = 1
 
 # Output image format: "jpg" (lossy, ~20 KB/cutout) or "png" (lossless, ~60 KB/cutout)
 AZULERO_FORMAT   = "jpg"
-EUMMY_FORMAT     = "png"
+EUMMY_FORMAT     = "jpg"
 JPEG_QUALITY     = 99
 
 # Release dirs, tried in order — first complete set of FITS wins (put R2 before R1).
@@ -196,7 +196,6 @@ def rename_eummy_cutouts(tile_dir: str, sources: list[dict], eummy_out_dir: str,
     ra_arr = np.array([s["ra"] for s in sources])
     dec_arr = np.array([s["dec"] for s in sources])
 
-    os.makedirs(eummy_out_dir, exist_ok=True)
     n_renamed = 0
     for png_path in glob.glob(os.path.join(tile_dir, "TILE*_*.png")):
         fname = os.path.basename(png_path)
@@ -217,15 +216,15 @@ def rename_eummy_cutouts(tile_dir: str, sources: list[dict], eummy_out_dir: str,
             continue
 
         source_id = sources[i]["source_id"]
+        tile_id = source_id.split("_", 1)[0]
         fmt = EUMMY_FORMAT.lower()
-        dest = os.path.join(eummy_out_dir, f"{source_id}.{fmt}")
+        tile_out_dir = os.path.join(eummy_out_dir, tile_id)
+        os.makedirs(tile_out_dir, exist_ok=True)
+        dest = os.path.join(tile_out_dir, f"{source_id}.{fmt}")
         if os.path.exists(dest):
             continue
-        if fmt == "png":
-            os.replace(png_path, dest)
-        else:
-            Image.open(png_path).convert("RGB").save(dest, quality=JPEG_QUALITY)
-            os.remove(png_path)
+        Image.open(png_path).convert("RGB").save(dest, quality=JPEG_QUALITY)
+        os.remove(png_path)
         n_renamed += 1
     return n_renamed
 
@@ -300,7 +299,8 @@ def process_tile(args: tuple) -> tuple[int, int, int, int]:
     # Check each pass independently so we can skip one without re-running the other.
     az_tile_dir = os.path.join(azulero_out, str(tile_id))
     az_done = True  # azulero already zipped — skip re-rendering
-    em_done = all(os.path.exists(os.path.join(eummy_out, f"{s['source_id']}.{EUMMY_FORMAT.lower()}")) for s in sources)
+    em_tile_out = os.path.join(eummy_out, str(tile_id))
+    em_done = all(os.path.exists(os.path.join(em_tile_out, f"{s['source_id']}.{EUMMY_FORMAT.lower()}")) for s in sources)
     if az_done and em_done:
         return tile_id, 0, 0, 0
 

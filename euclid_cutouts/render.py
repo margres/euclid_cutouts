@@ -345,6 +345,14 @@ def _init_worker():
 _worker_cfg: dict = {}
 
 
+def _tile_subdir(out_root: str, stem: str) -> str:
+    """Return ``{out_root}/{tile_id}/`` from a ``{tile_id}_{object_id}`` stem."""
+    tile_id = stem.split("_", 1)[0]
+    d = os.path.join(out_root, tile_id)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
 def _render_one_fits(fits_path: str) -> tuple[str, dict[str, int]]:
     cfg = _worker_cfg
     stem = os.path.splitext(os.path.basename(fits_path))[0]
@@ -359,7 +367,8 @@ def _render_one_fits(fits_path: str) -> tuple[str, dict[str, int]]:
     save_kw = {"quality": cfg["jpeg_quality"]} if fmt == "jpg" else {}
 
     if cfg["enable_azulero"]:
-        out_path = os.path.join(cfg["azulero_out"], f"{stem}.{fmt}")
+        tile_dir = _tile_subdir(cfg["azulero_out"], stem)
+        out_path = os.path.join(tile_dir, f"{stem}.{fmt}")
         if not os.path.exists(out_path):
             try:
                 rgb = render_azulero(iyjh)
@@ -369,7 +378,8 @@ def _render_one_fits(fits_path: str) -> tuple[str, dict[str, int]]:
                 log.exception("  azulero failed for %s", stem)
 
     if cfg["enable_stci"]:
-        out_path = os.path.join(cfg["stci_out"], f"{stem}.{fmt}")
+        tile_dir = _tile_subdir(cfg["stci_out"], stem)
+        out_path = os.path.join(tile_dir, f"{stem}.{fmt}")
         if not os.path.exists(out_path):
             try:
                 rgb = render_stci(iyjh)
@@ -386,7 +396,8 @@ def _render_one_fits(fits_path: str) -> tuple[str, dict[str, int]]:
             pass
         vis, y_im, j_im = iyjh[0], iyjh[1], iyjh[2]
         for variant, out_dir in cfg["bulk_out_dirs"].items():
-            out_path = os.path.join(out_dir, f"{stem}.{fmt}")
+            tile_dir = _tile_subdir(out_dir, stem)
+            out_path = os.path.join(tile_dir, f"{stem}.{fmt}")
             if os.path.exists(out_path):
                 continue
             try:
