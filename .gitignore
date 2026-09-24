@@ -16,6 +16,8 @@ cutouts/
 demo_output/
 demo_ml_output/
 cutana_fetched_fits/
+cutana_eummy_output/
+demo_sources.csv
 
 # Packaging
 *.egg-info/
