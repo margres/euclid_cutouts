@@ -20,6 +20,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+renderers = [
+    "azulero>=2.0",
+    "STCI",
+]
 all = [
     "pandas",
     "opencv-python",

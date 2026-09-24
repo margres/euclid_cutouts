@@ -39,6 +39,13 @@ CHANNEL_2, ...). The output filename stem is the input filename without the
 `.fits` extension. Eummy is not supported in this mode (it needs tile-level
 FITS).
 
+Note: this mode's underlying library call, `euclid_cutouts.render.render_fits_dir`,
+writes each renderer's output to `{pipeline}/{tile_id}/{source_id}.jpg`, where
+`tile_id` is the part of the stem before the first `_` — a per-tile subfolder,
+not flat — to avoid NFS slowdowns from million-entry flat directories. This
+differs from `make_colour_cutouts.py`'s own CSV-mode output (flat, see
+"Output structure" above).
+
 ## Input CSV columns
 
 Only RA and Dec are required. Everything else is optional — the pipeline
@@ -125,7 +132,7 @@ cutana_cutouts.ipynb            Cutana UI notebook for interactive cutouts
 
 ## Colouring pipelines
 
-The cutout extraction and colour rendering rely on four tools developed
+The cutout extraction and colour rendering rely on five tools developed
 within (or for) the Euclid Consortium. Each renderer can be toggled
 independently via the `ENABLE_*` flags in the CONFIG block:
 
@@ -152,13 +159,24 @@ is CNES's colour-rendering package for Euclid tiles. It combines the four MER
 stack bands (VIS, NIR-Y, NIR-J, NIR-H) into an LRGB composite using an asinh
 stretch, per-band sharpening, dead-pixel inpainting, and configurable
 hue/saturation mapping. This pipeline uses azulero's Python API
-(`azulero.image.color`, `azulero.image.mask`) through the `render` module in
-`astronomaly-euclid/cutana_datalabs/`, which renders individual cutouts
-in-memory rather than processing whole tiles via the `azul process` CLI.
+(`azulero.image.color`, `azulero.image.mask`) directly, through the
+`euclid_cutouts.render` module, which renders individual cutouts in-memory
+rather than processing whole tiles via the `azul process` CLI.
 
 - Input: 4-band IYJH (VIS, NIR-Y, NIR-J, NIR-H) cutout arrays
 - Output: JPEG colour images (one per source)
 - Install: `pip install azulero` (requires v2.0+)
+
+### STCI
+
+[STCI](https://pypi.org/project/STCI/) (SpaceTelescopeColorImage, courtesy Tian Li) applies a PixInsight-like
+pipeline to produce a colour composite: background neutralisation, colour
+calibration, linked screen transfer function / histogram transformation,
+luminosity replacement, SCNR, and saturation.
+
+- Input: VIS, NIR-Y, NIR-J 2-D cutout arrays
+- Output: JPEG/PNG colour images (one per source)
+- Install: `pip install STCI`
 
 ### eummy
 
@@ -201,16 +219,16 @@ the CONFIG block.
 - Python 3.12+
 - `numpy`, `pandas`, `astropy`, `Pillow`, `opencv-python`
 - `azulero` 2.0 (`pip install azulero`)
+- `STCI` (`pip install STCI`)
 - `eummy` (`pip install eummy`)
 - `bulk-euclid-cutouts` (`pip install -e /path/to/bulk-euclid-cutouts`)
 - `healpy` (for tile lookup when `tile_index` is absent from the CSV)
 - `cutana` (`pip install cutana`)
 
-The `render` module is imported from
-`astronomaly-euclid/cutana_datalabs/`; make sure that repo is available and
-its path is set in the `_CUTANA_ROOT` variable at the top of
-`make_colour_cutouts.py`. The `bulk_euclid` package is imported from
-`bulk-euclid-cutouts/`; set `_BULK_EUCLID_ROOT` accordingly.
+`azulero` and `STCI` are pip packages, imported directly. The `bulk_euclid`
+package is imported from `bulk-euclid-cutouts/`; set `_BULK_EUCLID_ROOT`
+(in `make_colour_cutouts.py`) or `bulk_euclid_root` (library API) to point
+at a local clone.
 
 ## Tests
 
