@@ -17,6 +17,7 @@ demo_output/
 demo_ml_output/
 cutana_fetched_fits/
 cutana_eummy_output/
+cutana_colour_output/
 demo_sources.csv
 
 # Packaging
