@@ -353,6 +353,24 @@ def _tile_subdir(out_root: str, stem: str) -> str:
     return d
 
 
+def _render_and_save(name, out_root, stem, fmt, save_kw, counts, render_fn):
+    """Render via `render_fn` (no args) and save under `out_root/{tile}/{stem}.{fmt}`,
+    skipping if that file already exists. Increments `counts[name]` on success;
+    logs and swallows any failure so one bad render doesn't abort the batch."""
+    tile_dir = _tile_subdir(out_root, stem)
+    out_path = os.path.join(tile_dir, f"{stem}.{fmt}")
+    if os.path.exists(out_path):
+        return
+    try:
+        rgb = render_fn()
+        if rgb is None:
+            return
+        Image.fromarray(rgb).save(out_path, **save_kw)
+        counts[name] = counts.get(name, 0) + 1
+    except Exception:
+        log.exception("  %s failed for %s", name, stem)
+
+
 def _render_one_fits(fits_path: str) -> tuple[str, dict[str, int]]:
     cfg = _worker_cfg
     stem = os.path.splitext(os.path.basename(fits_path))[0]
@@ -367,26 +385,12 @@ def _render_one_fits(fits_path: str) -> tuple[str, dict[str, int]]:
     save_kw = {"quality": cfg["jpeg_quality"]} if fmt == "jpg" else {}
 
     if cfg["enable_azulero"]:
-        tile_dir = _tile_subdir(cfg["azulero_out"], stem)
-        out_path = os.path.join(tile_dir, f"{stem}.{fmt}")
-        if not os.path.exists(out_path):
-            try:
-                rgb = render_azulero(iyjh)
-                Image.fromarray(rgb).save(out_path, **save_kw)
-                counts["azulero"] = 1
-            except Exception:
-                log.exception("  azulero failed for %s", stem)
+        _render_and_save("azulero", cfg["azulero_out"], stem, fmt, save_kw, counts,
+                         lambda: render_azulero(iyjh))
 
     if cfg["enable_stci"]:
-        tile_dir = _tile_subdir(cfg["stci_out"], stem)
-        out_path = os.path.join(tile_dir, f"{stem}.{fmt}")
-        if not os.path.exists(out_path):
-            try:
-                rgb = render_stci(iyjh)
-                Image.fromarray(rgb).save(out_path, **save_kw)
-                counts["stci"] = 1
-            except Exception:
-                log.exception("  stci failed for %s", stem)
+        _render_and_save("stci", cfg["stci_out"], stem, fmt, save_kw, counts,
+                         lambda: render_stci(iyjh))
 
     if cfg["enable_bulk"]:
         try:
@@ -396,19 +400,9 @@ def _render_one_fits(fits_path: str) -> tuple[str, dict[str, int]]:
             pass
         vis, y_im, j_im = iyjh[0], iyjh[1], iyjh[2]
         for variant, out_dir in cfg["bulk_out_dirs"].items():
-            tile_dir = _tile_subdir(out_dir, stem)
-            out_path = os.path.join(tile_dir, f"{stem}.{fmt}")
-            if os.path.exists(out_path):
-                continue
-            try:
-                rgb = render_bulk_variant(variant, vis, y_im, j_im,
-                                         bulk_euclid_root=cfg["bulk_euclid_root"])
-                if rgb is None:
-                    continue
-                Image.fromarray(rgb).save(out_path, **save_kw)
-                counts[variant] = counts.get(variant, 0) + 1
-            except Exception:
-                log.exception("  bulk_euclid %s failed for %s", variant, stem)
+            _render_and_save(variant, out_dir, stem, fmt, save_kw, counts,
+                             lambda variant=variant: render_bulk_variant(
+                                 variant, vis, y_im, j_im, bulk_euclid_root=cfg["bulk_euclid_root"]))
 
     return stem, counts
 
