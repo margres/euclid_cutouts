@@ -15,6 +15,7 @@ results/
 cutouts/
 demo_output/
 demo_ml_output/
+cutana_fetched_fits/
 
 # Packaging
 *.egg-info/

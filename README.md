@@ -127,7 +127,11 @@ scripts/
 tests/
   test_make_colour_cutouts.py   unit tests for the main pipeline
   test_make_q1_colour_cutouts.py
+  test_render.py                unit tests for euclid_cutouts/render.py
 cutana_cutouts.ipynb            Cutana UI notebook for interactive cutouts
+cutana_to_colour_tutorial.ipynb Cutana fetch -> colour RGB, non-interactive
+tutorial.ipynb                  euclid_cutouts library tutorial (all renderers,
+                                 FITS-input mode, ML-inference filtering demo)
 ```
 
 ## Colouring pipelines
