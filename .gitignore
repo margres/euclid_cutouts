@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+cutouts/
+cutana_colour_output/
+cutana_fetched_fits/
+cutana_eummy_output/
+bulk-euclid-cutouts/
